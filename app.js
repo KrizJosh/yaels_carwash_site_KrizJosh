@@ -35,6 +35,42 @@ function getSession() {
 function clearSession() {
     localStorage.removeItem(SESSION_KEY);
 }
+// Add function to display sync status
+function renderSyncStatus() {
+    const statusEl = document.getElementById('syncStatus');
+    if (!statusEl) return;
+    
+    if (typeof getSyncStatus !== 'function') {
+        statusEl.innerHTML = '<span style="color:var(--warning);">Sync not available</span>';
+        return;
+    }
+    
+    const status = getSyncStatus();
+    
+    let html = '';
+    if (status.isConnected) {
+        html = `
+            <span style="color:var(--success);">
+                <i class="fas fa-cloud-check"></i> 
+                Connected • Last sync: ${status.lastSyncFormatted}
+            </span>
+        `;
+    } else {
+        html = `
+            <span style="color:var(--warning);">
+                <i class="fas fa-cloud-slash"></i> 
+                Offline • ${status.totalUsers} users cached locally
+            </span>
+        `;
+    }
+    
+    if (status.pendingChanges > 0) {
+        html += ` <span style="color:var(--warning);">• ${status.pendingChanges} pending changes</span>`;
+    }
+    
+    statusEl.innerHTML = html;
+}
+
 
 // ============================================================
 // CONFIGURATION
@@ -573,8 +609,10 @@ function setupModalCloseListeners() {
         }
     });
 }
+
+
 // ============================================================
-// SUPABASE INITIALIZATION (Updated)
+// SUPABASE INITIALIZATION (Updated with sync)
 // ============================================================
 function initializeSupabase() {
     try {
@@ -587,10 +625,10 @@ function initializeSupabase() {
             isSupabaseConnected = true;
             updateStatus('✅ Connected', 'connected');
             
-            // ✅ CONNECT USERS MODULE TO SUPABASE
+            // Connect users module to Supabase (triggers sync)
             if (typeof setSupabaseUsersClient === 'function') {
                 setSupabaseUsersClient(supabaseClient, true);
-                console.log('✅ Users module connected to Supabase');
+                console.log('✅ Users module connected to Supabase (sync starting)');
             }
         } else {
             console.warn('⚠️ Supabase not configured');
@@ -598,7 +636,6 @@ function initializeSupabase() {
             supabaseClient = null;
             isSupabaseConnected = false;
             
-            // Connect users module in offline mode
             if (typeof setSupabaseUsersClient === 'function') {
                 setSupabaseUsersClient(null, false);
             }
@@ -614,6 +651,30 @@ function initializeSupabase() {
         }
     }
 }
+
+// ============================================================
+// MANUAL SYNC TRIGGER (add to settings or user management page)
+// ============================================================
+async function syncUsersNow() {
+    if (typeof forceSyncNow === 'function') {
+        showNotification('Syncing users...', 'info');
+        const result = await forceSyncNow();
+        
+        if (result.success) {
+            showNotification(
+                `✅ Sync complete! Added: ${result.added}, Updated: ${result.updated}, From DB: ${result.synced}`,
+                'success'
+            );
+        } else {
+            showNotification('⚠️ Sync failed: ' + (result.reason || result.error), 'warning');
+        }
+        return result;
+    }
+    return { success: false, reason: 'sync_not_available' };
+}
+
+window.syncUsersNow = syncUsersNow;
+
 function updateStatus(text, type = '') {
     const badge = document.getElementById('statusBadge');
     if (badge) {
