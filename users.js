@@ -30,45 +30,17 @@ const PERMISSIONS = {
 // ============================================================
 const DEFAULT_USERS = {
     admin: {
-        password: 'password123',
+        password: 'Passw0rd!',
         role: USER_ROLES.ADMIN,
         name: 'Admin Manager',
         employeeId: 'EMP-001',
         department: 'Management'
     },
     staff: {
-        password: 'password123',
+        password: 'staffpasslOgin',
         role: USER_ROLES.STAFF,
         name: 'John Doe',
         employeeId: 'EMP-002',
-        department: 'Operations'
-    },
-    jayson: {
-        password: 'password123',
-        role: USER_ROLES.STAFF,
-        name: 'Jayson Carwash',
-        employeeId: 'EMP-003',
-        department: 'Carwash'
-    },
-    dennis: {
-        password: 'password123',
-        role: USER_ROLES.STAFF,
-        name: 'Dennis Detailer',
-        employeeId: 'EMP-004',
-        department: 'Detailing'
-    },
-    jomar: {
-        password: 'password123',
-        role: USER_ROLES.STAFF,
-        name: 'Jomar Carwash',
-        employeeId: 'EMP-005',
-        department: 'Carwash'
-    },
-    manager: {
-        password: 'password123',
-        role: USER_ROLES.MANAGER,
-        name: 'Sarah Manager',
-        employeeId: 'EMP-006',
         department: 'Operations'
     }
 };
