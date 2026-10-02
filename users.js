@@ -65,14 +65,14 @@ const PERMISSIONS = {
 // ============================================================
 let USERS = {
     admin: {
-        password: 'yaels@carwash',
+        password: 'Passw0rd!',
         role: USER_ROLES.ADMIN,
         name: 'Admin Manager',
         employeeId: 'EMP-001',
         department: 'Management'
     },
     staff: {
-        password: 'staff@yael',
+        password: 'staffpasslOgin',
         role: USER_ROLES.STAFF,
         name: 'John Doe',
         employeeId: 'EMP-002',
