@@ -4,8 +4,7 @@
 
 const USER_ROLES = {
     ADMIN: 'admin',
-    STAFF: 'staff',
-    MANAGER: 'manager'
+    STAFF: 'cashier'
 };
 
 const PERMISSIONS = {
@@ -37,7 +36,7 @@ const DEFAULT_USERS = {
         department: 'Management'
     },
     staff: {
-        password: 'staffpasslOgin',
+        password: 'cashier1234',
         role: USER_ROLES.STAFF,
         name: 'John Doe',
         employeeId: 'EMP-002',
