@@ -2969,7 +2969,7 @@ body:has(.modal-overlay.active) .fab-dock {
     font-weight: 600;
 }
 
-/* Responsive bay picker */
+
 @media (max-width: 480px) {
     .bay-picker {
         grid-template-columns: repeat(4, 1fr);
