@@ -1,78 +1,4 @@
 // ============================================================
-// SESSION MANAGEMENT
-// ============================================================
-const SESSION_KEY = 'carwash_session';
-const SESSION_EXPIRY = 24 * 60 * 60 * 1000;
-
-function saveSession(user) {
-    if (!user) {
-        localStorage.removeItem(SESSION_KEY);
-        return;
-    }
-    const session = {
-        user: user,
-        timestamp: Date.now(),
-        expires: Date.now() + SESSION_EXPIRY
-    };
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-}
-
-function getSession() {
-    try {
-        const sessionData = localStorage.getItem(SESSION_KEY);
-        if (!sessionData) return null;
-        const session = JSON.parse(sessionData);
-        if (Date.now() > session.expires) {
-            localStorage.removeItem(SESSION_KEY);
-            return null;
-        }
-        return session.user;
-    } catch (e) {
-        return null;
-    }
-}
-
-function clearSession() {
-    localStorage.removeItem(SESSION_KEY);
-}
-// Add function to display sync status
-function renderSyncStatus() {
-    const statusEl = document.getElementById('syncStatus');
-    if (!statusEl) return;
-    
-    if (typeof getSyncStatus !== 'function') {
-        statusEl.innerHTML = '<span style="color:var(--warning);">Sync not available</span>';
-        return;
-    }
-    
-    const status = getSyncStatus();
-    
-    let html = '';
-    if (status.isConnected) {
-        html = `
-            <span style="color:var(--success);">
-                <i class="fas fa-cloud-check"></i> 
-                Connected • Last sync: ${status.lastSyncFormatted}
-            </span>
-        `;
-    } else {
-        html = `
-            <span style="color:var(--warning);">
-                <i class="fas fa-cloud-slash"></i> 
-                Offline • ${status.totalUsers} users cached locally
-            </span>
-        `;
-    }
-    
-    if (status.pendingChanges > 0) {
-        html += ` <span style="color:var(--warning);">• ${status.pendingChanges} pending changes</span>`;
-    }
-    
-    statusEl.innerHTML = html;
-}
-
-
-// ============================================================
 // CONFIGURATION
 // ============================================================
 const SUPABASE_URL = 'https://lbodymcytlzzcldswaku.supabase.co';
@@ -85,16 +11,21 @@ const SERVICE_PRICES_TABLE = 'service_prices';
 const STORE_SUMMARY_TABLE = 'july19_summary';
 const BACKUP_HISTORY_KEY = 'carwash_backup_history';
 
+
 // ============================================================
-// STATE
+// SESSION & STATE
 // ============================================================
+const SESSION_KEY = 'carwash_session';
+const SESSION_EXPIRY = 24 * 60 * 60 * 1000;
+
 let currentUser = null;
 let supabaseClient = null;
 let isSupabaseConnected = false;
-let isLoading = false;
-let dataLoaded = false;
 let transactions = [];
 let filteredTransactions = [];
+let ongoingTransactions = [];
+let completedTransactions = [];
+let filteredCompleted = [];
 let reportData = [];
 let salaryData = [];
 let auditLogs = [];
@@ -107,226 +38,685 @@ let servicePrices = [];
 let changedPrices = new Set();
 let sortColumn = 'id';
 let sortDirection = 'desc';
-let isDetailerRequired = false;
 let backupHistory = [];
-let autoBackupTimer = null;
+let currentTransactionTab = 'all';
+let salaryDateRange = { preset: 'this-week', fromDate: null, toDate: null };
+let ongoingViewDate = null;
+let completedViewDate = null;
 
-// Store data
 let storeData = {
-    cigarettes: 0, snacks: 0,
-    drinksWater: 0, drinksSoda: 0, drinksCoffee: 0, drinksJuice: 0, drinksEnergy: 0,
+    cigarettes: 0, snacks: 0, drinksWater: 0, drinksSoda: 0, drinksCoffee: 0, drinksJuice: 0, drinksEnergy: 0,
     palutoNoodles: 0, palutoRice: 0, palutoSoup: 0, palutoSilog: 0, palutoAppetizer: 0,
     otherSales: 0, gcashCw: 0, gcashFoods: 0, expenses: 0
 };
+// ============================================================
+// KIOSK PRODUCTS (Store + Accessories)
+// ============================================================
+const PRODUCTS_KEY = 'carwash_products_v1';
 
-// Dropdown data
-let dropdownData = {
-    models: ['VIOS', 'INNOVA', 'HILUX', 'XPANDER', 'AVANZA', 'MIRAGE', 'MONTERO', 'FORTUNER', 'BRV', 'WIGO', 'NV350', 'HIACE', 'RUSH', 'RAIZE', 'VELOZ'],
-    services: ['CARWASH', 'HANDWAX', 'MACHINEWAX', 'ACIDRAIN', 'BACKTOZERO', 'ENGINEWASH', 'UNDERWASH', 'QW', 'BTZ'],
-    other: ['ACIDRAIN', 'BACKTOZERO', 'BTZ', 'ENGINEWASH', 'MACHINEWAX', 'HANDWAX', 'HEADLIGHT REST.', 'SEAT COVER'],
-    carwasher: ['JAYSON', 'DENNIS', 'JOMAR', 'RODEL', 'JUSTINE', 'JM', 'PHILIP', 'KURT', 'ADING', 'HART'],
-    detailer: ['DENNIS', 'JOMAR', 'JAYSON', 'RODEL', 'JUSTINE', 'JM', 'PHILIP', 'KURT', 'ADING', 'HART', '']
+let products = [];          // [{ id, name, price, category, emoji, stock, active }]
+let kioskCart = [];         // [{ productId, name, price, qty }]
+let kioskMode = 'store';    // 'store' | 'accessories'
+let editingProductId = null;
+let productSearchQuery = '';
+let productCategoryFilter = 'all';
+
+const DEFAULT_PRODUCTS = [
+    // Store
+    { id: 'p-c1', name: 'Cigarettes',         price: 12,  category: 'store',       emoji: '🚬', stock: 50, active: true },
+    { id: 'p-c2', name: 'Snacks',             price: 10,  category: 'store',       emoji: '🍪', stock: 50, active: true },
+    { id: 'p-c3', name: 'Biscuits',           price: 8,   category: 'store',       emoji: '🍘', stock: 40, active: true },
+    { id: 'p-c4', name: 'Candy',              price: 5,   category: 'store',       emoji: '🍬', stock: 60, active: true },
+    // Drinks
+    { id: 'p-d1', name: 'Water',              price: 15,  category: 'drinks',      emoji: '💧', stock: 40, active: true },
+    { id: 'p-d2', name: 'Soft Drinks',        price: 15,  category: 'drinks',      emoji: '🥤', stock: 40, active: true },
+    { id: 'p-d3', name: 'Coffee',             price: 25,  category: 'drinks',      emoji: '☕', stock: 30, active: true },
+    { id: 'p-d4', name: 'Juice',              price: 20,  category: 'drinks',      emoji: '🧃', stock: 30, active: true },
+    { id: 'p-d5', name: 'Energy Drink',       price: 35,  category: 'drinks',      emoji: '⚡', stock: 20, active: true },
+    // Paluto
+    { id: 'p-p1', name: 'Noodles',            price: 30,  category: 'paluto',      emoji: '🍜', stock: 25, active: true },
+    { id: 'p-p2', name: 'Rice Meal',          price: 50,  category: 'paluto',      emoji: '🍚', stock: 25, active: true },
+    { id: 'p-p3', name: 'Soup',               price: 40,  category: 'paluto',      emoji: '🍲', stock: 20, active: true },
+    { id: 'p-p4', name: 'Silog Meal',         price: 60,  category: 'paluto',      emoji: '🍳', stock: 15, active: true },
+    { id: 'p-p5', name: 'Appetizer',          price: 45,  category: 'paluto',      emoji: '🥗', stock: 15, active: true },
+    // Accessories
+    { id: 'p-a1', name: 'Car Shampoo',        price: 250, category: 'accessories', emoji: '🧴', stock: 15, active: true },
+    { id: 'p-a2', name: 'Tire Black',         price: 180, category: 'accessories', emoji: '⚫', stock: 20, active: true },
+    { id: 'p-a3', name: 'Microfiber Towel',   price: 150, category: 'accessories', emoji: '🧽', stock: 25, active: true },
+    { id: 'p-a4', name: 'Car Wax',            price: 350, category: 'accessories', emoji: '✨', stock: 12, active: true },
+    { id: 'p-a5', name: 'Air Freshener',      price: 100, category: 'accessories', emoji: '🌸', stock: 30, active: true },
+    { id: 'p-a6', name: 'Glass Cleaner',      price: 200, category: 'accessories', emoji: '🪟', stock: 15, active: true },
+    { id: 'p-a7', name: 'Dashboard Polish',   price: 220, category: 'accessories', emoji: '💎', stock: 10, active: true },
+    { id: 'p-a8', name: 'Engine Degreaser',   price: 280, category: 'accessories', emoji: '🔧', stock: 8,  active: true }
+];
+
+const STORE_CATEGORIES = {
+    store:       { label: 'Store Items',  icon: '📦', color: '#16a34a' },
+    drinks:      { label: 'Drinks',       icon: '🥤', color: '#0ea5e9' },
+    paluto:      { label: 'Paluto',       icon: '🍜', color: '#7c3aed' },
+    accessories: { label: 'Accessories',  icon: '🧴', color: '#f59e0b' },
+    other:       { label: 'Other',        icon: '💰', color: '#dc2626' }
 };
 
-
 // ============================================================
-// USER MANAGEMENT FUNCTIONS
+// PRODUCT STORAGE
 // ============================================================
-
-async function refreshUsers() {
-    showNotification('Refreshing users...', 'info');
-    await loadUsersFromDatabase();
-    renderUsersTable();
-    showNotification('Users refreshed', 'success');
+function loadProducts() {
+    try {
+        const raw = localStorage.getItem(PRODUCTS_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                products = parsed;
+                return;
+            }
+        }
+    } catch (e) { console.warn('Could not load products:', e); }
+    products = JSON.parse(JSON.stringify(DEFAULT_PRODUCTS));
+    saveProducts();
 }
 
-function renderUsersTable() {
-    const tbody = document.getElementById('usersBody');
-    if (!tbody) return;
+function saveProducts() {
+    try {
+        localStorage.setItem(PRODUCTS_KEY, JSON.stringify(products));
+    } catch (e) { console.warn('Could not save products:', e); }
+}
 
-    const users = getUsers();
-    if (users.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No users found</td></tr>';
+function getProductById(id) {
+    return products.find(p => p.id === id);
+}
+
+function getProductsForKiosk(mode) {
+    let list = products.filter(p => p.active !== false);
+
+    if (mode === 'store') {
+        // Store tab shows store, drinks, paluto, other
+        list = list.filter(p => ['store', 'drinks', 'paluto', 'other'].includes(p.category));
+    } else if (mode === 'accessories') {
+        list = list.filter(p => p.category === 'accessories');
+    }
+
+    if (productCategoryFilter !== 'all') {
+        list = list.filter(p => p.category === productCategoryFilter);
+    }
+
+    if (productSearchQuery) {
+        const q = productSearchQuery.toLowerCase();
+        list = list.filter(p =>
+            p.name.toLowerCase().includes(q) ||
+            (p.emoji && p.emoji.includes(q))
+        );
+    }
+
+    return list;
+}
+
+// ============================================================
+// CART
+// ============================================================
+function addToCart(productId) {
+    const p = getProductById(productId);
+    if (!p) return;
+    if (p.stock != null && p.stock <= 0) {
+        showNotification(`${p.name} is out of stock`, 'warning');
+        return;
+    }
+    const existing = kioskCart.find(c => c.productId === productId);
+    if (existing) {
+        existing.qty += 1;
+    } else {
+        kioskCart.push({
+            productId: p.id,
+            name: p.name,
+            price: p.price,
+            emoji: p.emoji || '📦',
+            qty: 1
+        });
+    }
+    renderKioskCart();
+    renderKioskGrid();
+}
+
+function incrementCart(productId) {
+    const item = kioskCart.find(c => c.productId === productId);
+    if (!item) return;
+    const p = getProductById(productId);
+    if (p && p.stock != null && item.qty >= p.stock) {
+        showNotification(`Only ${p.stock} in stock`, 'warning');
+        return;
+    }
+    item.qty += 1;
+    renderKioskCart();
+    renderKioskGrid();
+}
+
+function decrementCart(productId) {
+    const item = kioskCart.find(c => c.productId === productId);
+    if (!item) return;
+    item.qty -= 1;
+    if (item.qty <= 0) {
+        removeFromCart(productId);
+        return;
+    }
+    renderKioskCart();
+    renderKioskGrid();
+}
+
+function removeFromCart(productId) {
+    kioskCart = kioskCart.filter(c => c.productId !== productId);
+    renderKioskCart();
+    renderKioskGrid();
+}
+
+function clearCart() {
+    if (kioskCart.length === 0) return;
+    kioskCart = [];
+    renderKioskCart();
+    renderKioskGrid();
+}
+
+function getCartTotal() {
+    return kioskCart.reduce((s, c) => s + c.price * c.qty, 0);
+}
+
+function getCartQty() {
+    return kioskCart.reduce((s, c) => s + c.qty, 0);
+}
+
+// ============================================================
+// RENDER: KIOSK GRID
+// ============================================================
+function renderKioskGrid() {
+    const grid = document.getElementById('kioskGrid');
+    if (!grid) return;
+
+    const list = getProductsForKiosk(kioskMode);
+
+    if (list.length === 0) {
+        grid.innerHTML = `
+            <div class="kiosk-empty">
+                <div class="kiosk-empty-icon">📭</div>
+                <div class="kiosk-empty-title">No products found</div>
+                <div class="kiosk-empty-text">Try a different search or add a new product.</div>
+                <button class="btn btn-primary" onclick="openProductModal()">
+                    <i class="fas fa-plus"></i> Add Product
+                </button>
+            </div>
+        `;
         return;
     }
 
-    tbody.innerHTML = '';
-    users.forEach((user, idx) => {
-        const tr = document.createElement('tr');
-        const roleClass = user.role === 'admin' ? 'badge-danger' : 
-                          user.role === 'manager' ? 'badge-warning' : 'badge-info';
-        tr.innerHTML = `
-            <td>${idx + 1}</td>
-            <td><strong>${user.username}</strong></td>
-            <td>${user.name || '—'}</td>
-            <td><span class="badge ${roleClass}">${(user.role || '').toUpperCase()}</span></td>
-            <td>${user.employeeId || '—'}</td>
-            <td>${user.department || '—'}</td>
-            <td><span class="badge badge-success">ACTIVE</span></td>
-            <td>
-                <div class="row-actions">
-                    <button class="btn btn-sm btn-primary" onclick="openUserModal('${user.username}')">
-                        <i class="fas fa-edit"></i>
-                    </button>
-                    ${user.username !== 'admin' ? `
-                        <button class="btn btn-sm btn-danger" onclick="deleteUserConfirm('${user.username}')">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    ` : ''}
-                </div>
-            </td>
+    grid.innerHTML = '';
+    list.forEach(p => {
+        const inCart = kioskCart.find(c => c.productId === p.id);
+        const qty = inCart ? inCart.qty : 0;
+        const outOfStock = p.stock != null && p.stock <= 0;
+        const catMeta = STORE_CATEGORIES[p.category] || { color: '#64748b' };
+
+        const card = document.createElement('div');
+        card.className = `kiosk-product${outOfStock ? ' out-of-stock' : ''}${qty > 0 ? ' in-cart' : ''}`;
+        card.style.setProperty('--kp-color', catMeta.color);
+        card.innerHTML = `
+            ${qty > 0 ? `<span class="kp-badge">${qty}</span>` : ''}
+            <div class="kp-emoji">${p.emoji || '📦'}</div>
+            <div class="kp-name">${p.name}</div>
+            <div class="kp-price">${formatPrice(p.price)}</div>
+            <div class="kp-stock ${outOfStock ? 'out' : p.stock != null && p.stock < 10 ? 'low' : ''}">
+                ${outOfStock ? 'Out of stock' : p.stock != null ? `${p.stock} in stock` : 'Available'}
+            </div>
+            <button class="kp-add-btn" onclick="event.stopPropagation();addToCart('${p.id}')" ${outOfStock ? 'disabled' : ''}>
+                <i class="fas fa-plus"></i>
+            </button>
+            <div class="kp-actions">
+                <button class="kp-action" onclick="event.stopPropagation();editProduct('${p.id}')" title="Edit">
+                    <i class="fas fa-pen"></i>
+                </button>
+                <button class="kp-action kp-action-danger" onclick="event.stopPropagation();deleteProductConfirm('${p.id}')" title="Delete">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
         `;
-        tbody.appendChild(tr);
+        card.onclick = () => { if (!outOfStock) addToCart(p.id); };
+        grid.appendChild(card);
     });
 }
-
-function openUserModal(username = null) {
-    if (!checkPermission('manage_users')) return;
-
-    const modal = document.getElementById('userModal');
-    const title = document.getElementById('userModalTitle');
-    const form = document.getElementById('userForm');
-    
-    form.reset();
-    
-    if (username) {
-        title.textContent = '✏️ Edit User';
-        document.getElementById('editUsername').value = username;
-        document.getElementById('userUsername').value = username;
-        document.getElementById('userUsername').disabled = true;
-        
-        const user = getUserByUsername(username);
-        if (user) {
-            document.getElementById('userName').value = user.name || '';
-            document.getElementById('userRole').value = user.role || 'staff';
-            document.getElementById('userEmployeeId').value = user.employeeId || '';
-            document.getElementById('userDepartment').value = user.department || '';
-            document.getElementById('userPassword').required = false;
-            document.getElementById('userPassword').placeholder = 'Leave blank to keep current';
-        }
-    } else {
-        title.textContent = '👤 Add User';
-        document.getElementById('editUsername').value = '';
-        document.getElementById('userUsername').disabled = false;
-        document.getElementById('userPassword').required = true;
-        document.getElementById('userPassword').placeholder = 'Min 6 characters';
-    }
-
-    modal.classList.add('active');
-}
-
-function closeUserModal() {
-    const modal = document.getElementById('userModal');
-    if (modal) modal.classList.remove('active');
-}
-
-async function saveUser(e) {
-    e.preventDefault();
-    if (!checkPermission('manage_users')) return;
-
-    const editUsername = document.getElementById('editUsername').value;
-    const username = document.getElementById('userUsername').value.trim().toLowerCase();
-    const password = document.getElementById('userPassword').value;
-    const name = document.getElementById('userName').value.trim();
-    const role = document.getElementById('userRole').value;
-    const employeeId = document.getElementById('userEmployeeId').value.trim();
-    const department = document.getElementById('userDepartment').value.trim();
-
-    let result;
-    
-    if (editUsername) {
-        // Update existing user
-        const updates = { name, role, employeeId, department };
-        if (password) {
-            if (password.length < 6) {
-                showNotification('Password must be at least 6 characters', 'error');
-                return;
-            }
-            updates.password = password;
-        }
-        result = updateUser(editUsername, updates);
-        
-        if (result.success && USERS_TABLE_REF) {
-            const user = getUserByUsername(editUsername);
-            await saveUserToDatabase(editUsername, {
-                password: user.password,
-                name: user.name,
-                role: user.role,
-                employeeId: user.employeeId,
-                department: user.department
-            });
-        }
-    } else {
-        // Add new user
-        if (password.length < 6) {
-            showNotification('Password must be at least 6 characters', 'error');
-            return;
-        }
-        result = addUser(username, { password, name, role, employeeId, department });
-        
-        if (result.success && USERS_TABLE_REF) {
-            await saveUserToDatabase(username, {
-                password, name, role, employeeId, department
-            });
-        }
-    }
-
-    if (result.success) {
-        showNotification(result.message, 'success');
-        closeUserModal();
-        renderUsersTable();
-        logAudit('UPDATE', `User ${editUsername ? 'updated' : 'added'}: ${username}`, {
-            username, role, action: editUsername ? 'update' : 'add'
-        });
-    } else {
-        showNotification(result.message, 'error');
-    }
-}
-
-async function deleteUserConfirm(username) {
-    if (!checkPermission('manage_users')) return;
-    
-    const confirmed = await showConfirm({
-        icon: '🗑️',
-        iconColor: '#dc2626',
-        title: 'Delete User',
-        message: `Are you sure you want to delete user "${username}"?`,
-        details: {
-            transaction: `<strong>${username}</strong>`,
-            amount: 'This action cannot be undone',
-            status: '⚠️ IRREVERSIBLE'
-        },
-        buttonClass: 'btn-danger',
-        buttonText: '<i class="fas fa-trash"></i> Delete User'
-    });
-    
-    if (!confirmed) return;
-
-    const result = deleteUser(username);
-    
-    if (result.success && USERS_TABLE_REF) {
-        await deleteUserFromDatabase(username);
-    }
-
-    if (result.success) {
-        showNotification(result.message, 'success');
-        renderUsersTable();
-        logAudit('DELETE', `User deleted: ${username}`, { username });
-    } else {
-        showNotification(result.message, 'error');
-    }
-}
-
-// Expose functions
-window.refreshUsers = refreshUsers;
-window.renderUsersTable = renderUsersTable;
-window.openUserModal = openUserModal;
-window.closeUserModal = closeUserModal;
-window.saveUser = saveUser;
-window.deleteUserConfirm = deleteUserConfirm;
 
 // ============================================================
-// PRICE FORMATTING
+// RENDER: KIOSK CART
+// ============================================================
+function renderKioskCart() {
+    const panel = document.getElementById('kioskCartItems');
+    const countEl = document.getElementById('kioskCartCount');
+    const subtotalEl = document.getElementById('kioskSubtotal');
+    const totalEl = document.getElementById('kioskTotal');
+    const checkoutBtn = document.getElementById('kioskCheckoutBtn');
+    const emptyState = document.getElementById('kioskCartEmpty');
+
+    if (countEl) countEl.textContent = getCartQty();
+    const total = getCartTotal();
+    if (subtotalEl) subtotalEl.textContent = formatPrice(total);
+    if (totalEl) totalEl.textContent = formatPrice(total);
+    if (checkoutBtn) checkoutBtn.disabled = kioskCart.length === 0;
+
+    if (!panel) return;
+
+    if (kioskCart.length === 0) {
+        panel.innerHTML = '';
+        if (emptyState) emptyState.style.display = 'flex';
+        return;
+    }
+    if (emptyState) emptyState.style.display = 'none';
+
+    panel.innerHTML = kioskCart.map(c => `
+        <div class="kc-item">
+            <div class="kc-emoji">${c.emoji || '📦'}</div>
+            <div class="kc-info">
+                <div class="kc-name">${c.name}</div>
+                <div class="kc-price">${formatPrice(c.price)} × ${c.qty} = <strong>${formatPrice(c.price * c.qty)}</strong></div>
+            </div>
+            <div class="kc-qty-controls">
+                <button class="kc-qty-btn" onclick="decrementCart('${c.productId}')"><i class="fas fa-minus"></i></button>
+                <span class="kc-qty">${c.qty}</span>
+                <button class="kc-qty-btn" onclick="incrementCart('${c.productId}')"><i class="fas fa-plus"></i></button>
+            </div>
+            <button class="kc-remove" onclick="removeFromCart('${c.productId}')"><i class="fas fa-times"></i></button>
+        </div>
+    `).join('');
+}
+
+// ============================================================
+// KIOSK TAB SWITCHING
+// ============================================================
+function switchKioskMode(mode) {
+    kioskMode = mode;
+    productCategoryFilter = 'all';
+    productSearchQuery = '';
+    const searchEl = document.getElementById('kioskSearch');
+    if (searchEl) searchEl.value = '';
+    document.querySelectorAll('.kiosk-tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.kiosk === mode);
+    });
+    // Populate category filter
+    populateKioskCategoryFilter();
+    renderKioskGrid();
+}
+
+function populateKioskCategoryFilter() {
+    const sel = document.getElementById('kioskCategoryFilter');
+    if (!sel) return;
+    sel.innerHTML = '<option value="all">All Categories</option>';
+    const cats = kioskMode === 'store'
+        ? ['store', 'drinks', 'paluto', 'other']
+        : ['accessories'];
+    cats.forEach(c => {
+        const meta = STORE_CATEGORIES[c];
+        const opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = `${meta.icon} ${meta.label}`;
+        sel.appendChild(opt);
+    });
+}
+
+function filterKioskProducts() {
+    productSearchQuery = (document.getElementById('kioskSearch')?.value || '').trim();
+    productCategoryFilter = document.getElementById('kioskCategoryFilter')?.value || 'all';
+    renderKioskGrid();
+}
+
+// ============================================================
+// PRODUCT MODAL (Add / Edit)
+// ============================================================
+function openProductModal(productId = null) {
+    if (!checkPermission('add')) return;
+    editingProductId = productId;
+    const modal = document.getElementById('productModal');
+    if (!modal) return;
+
+    const title = document.getElementById('productModalTitle');
+    const form = document.getElementById('productForm');
+    form.reset();
+
+    // Preset category based on active kiosk mode
+    const catSelect = document.getElementById('productCategory');
+    if (kioskMode === 'accessories') catSelect.value = 'accessories';
+    else catSelect.value = 'store';
+
+    if (productId) {
+        const p = getProductById(productId);
+        if (!p) return;
+        title.textContent = `✏️ Edit Product`;
+        document.getElementById('productName').value = p.name;
+        document.getElementById('productPrice').value = p.price;
+        document.getElementById('productCategory').value = p.category;
+        document.getElementById('productEmoji').value = p.emoji || '';
+        document.getElementById('productStock').value = p.stock != null ? p.stock : '';
+    } else {
+        title.textContent = `➕ Add Product`;
+        document.getElementById('productEmoji').value = '';
+        document.getElementById('productStock').value = '';
+    }
+    updateProductEmojiPreview();
+    modal.classList.add('active');
+    setTimeout(() => document.getElementById('productName')?.focus(), 150);
+}
+
+function closeProductModal() {
+    document.getElementById('productModal')?.classList.remove('active');
+    editingProductId = null;
+}
+
+function updateProductEmojiPreview() {
+    const emoji = document.getElementById('productEmoji')?.value || '';
+    const preview = document.getElementById('productEmojiPreview');
+    if (preview) preview.textContent = emoji.trim() || '📦';
+}
+
+async function saveProduct(e) {
+    e.preventDefault();
+    const name = document.getElementById('productName').value.trim();
+    const price = parseFloat(document.getElementById('productPrice').value);
+    const category = document.getElementById('productCategory').value;
+    const emoji = document.getElementById('productEmoji').value.trim() || '📦';
+    const stockVal = document.getElementById('productStock').value;
+    const stock = stockVal === '' ? null : parseFloat(stockVal);
+
+    if (!name) { showNotification('Product name is required', 'warning'); return; }
+    if (isNaN(price) || price <= 0) { showNotification('Enter a valid price', 'warning'); return; }
+    if (!category) { showNotification('Select a category', 'warning'); return; }
+    if (stock !== null && (isNaN(stock) || stock < 0)) { showNotification('Stock must be 0 or more', 'warning'); return; }
+
+    if (editingProductId) {
+        const p = getProductById(editingProductId);
+        if (!p) return;
+        const ok = await showConfirm({
+            icon: '💾', title: 'Update Product',
+            message: `Save changes to "${name}"?`,
+            details: { transaction: name, amount: formatPrice(price), status: 'UPDATE' },
+            buttonClass: 'btn-success', buttonText: '<i class="fas fa-save"></i> Update'
+        });
+        if (!ok) return;
+        p.name = name;
+        p.price = price;
+        p.category = category;
+        p.emoji = emoji;
+        p.stock = stock;
+        saveProducts();
+        await logAudit('UPDATE', `Product updated: ${name}`, { price, category });
+        showNotification(`Updated "${name}"`, 'success');
+    } else {
+        const ok = await showConfirm({
+            icon: '➕', title: 'Add Product',
+            message: `Add "${name}" at ${formatPrice(price)}?`,
+            details: { transaction: name, amount: formatPrice(price), status: 'NEW' },
+            buttonClass: 'btn-success', buttonText: '<i class="fas fa-plus"></i> Add'
+        });
+        if (!ok) return;
+        const newProduct = {
+            id: 'p-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+            name, price, category, emoji, stock,
+            active: true,
+            createdAt: new Date().toISOString()
+        };
+        products.push(newProduct);
+        saveProducts();
+        await logAudit('ADD', `Product added: ${name}`, { price, category });
+        showNotification(`Added "${name}"`, 'success');
+    }
+
+    closeProductModal();
+    renderKioskGrid();
+    populateKioskCategoryFilter();
+}
+
+function editProduct(id) { openProductModal(id); }
+
+async function deleteProductConfirm(id) {
+    const p = getProductById(id);
+    if (!p) return;
+    const ok = await showConfirm({
+        icon: '🗑️', title: 'Delete Product',
+        message: `Delete "${p.name}"? This cannot be undone.`,
+        details: { transaction: p.name, amount: formatPrice(p.price), status: 'DELETE' },
+        buttonClass: 'btn-danger', buttonText: '<i class="fas fa-trash"></i> Delete'
+    });
+    if (!ok) return;
+    products = products.filter(pr => pr.id !== id);
+    // Also remove from cart
+    kioskCart = kioskCart.filter(c => c.productId !== id);
+    saveProducts();
+    await logAudit('DELETE', `Product deleted: ${p.name}`, { price: p.price });
+    showNotification(`Deleted "${p.name}"`, 'success');
+    renderKioskGrid();
+    renderKioskCart();
+}
+
+// ============================================================
+// CHECKOUT
+// ============================================================
+async function kioskCheckout() {
+    if (kioskCart.length === 0) {
+        showNotification('Cart is empty', 'warning');
+        return;
+    }
+    if (!checkPermission('add')) return;
+
+    const total = getCartTotal();
+    const itemCount = getCartQty();
+    const summaryText = kioskCart.map(c => `${c.qty}× ${c.name}`).join(', ');
+
+    const ok = await showConfirm({
+        icon: '💳', title: 'Checkout',
+        message: `Complete this sale?`,
+        details: {
+            transaction: `${itemCount} item${itemCount !== 1 ? 's' : ''}`,
+            amount: formatPrice(total),
+            status: 'PAID'
+        },
+        buttonClass: 'btn-success',
+        buttonText: '<i class="fas fa-check"></i> Confirm Sale'
+    });
+    if (!ok) return;
+
+    const payment = document.getElementById('kioskPayment')?.value
+        || document.getElementById('kioskPaymentAcc')?.value
+        || 'CASH';
+    const now = new Date().toISOString();
+
+    // Group id is LOCAL ONLY — not written to DB.
+    // If your schema later adds a `cart_group` column, uncomment the DB line below.
+    const groupId = 'cart-' + Date.now();
+    const createdTxIds = [];
+
+    try {
+        for (const item of kioskCart) {
+            // Build payload matching your existing schema only
+            const tx = {
+                category: kioskMode === 'accessories'
+                    ? 'accessories'
+                    : (getProductById(item.productId)?.category || 'store'),
+                item: item.name,
+                quantity: item.qty,
+                unit_price: item.price,
+                total: item.price * item.qty,
+                payment,
+                payment_status: 'paid',
+                carwash_price: 0,
+                detailing_price: 0,
+                is_ongoing: false,
+                created_at: now,
+                updated_at: now
+                // cart_group: groupId   // ← only add this line if you actually
+                //                         added the column to the DB
+            };
+
+            let saved = tx;
+            if (supabaseClient && isSupabaseConnected) {
+                const { data, error } = await supabaseClient.from(TABLE_NAME).insert(tx).select();
+                if (error) throw error;
+                if (data && data.length) saved = data[0];
+            } else {
+                saved.id = Date.now() + Math.floor(Math.random() * 1000);
+            }
+            // Keep the group tag in-memory only so the UI can group if needed
+            saved._cart_group = groupId;
+
+            transactions.unshift(saved);
+            createdTxIds.push(saved.id);
+
+            // Decrement stock locally
+            const prod = getProductById(item.productId);
+            if (prod && prod.stock != null) {
+                prod.stock = Math.max(0, prod.stock - item.qty);
+            }
+        }
+        saveProducts();
+        await logAudit('ADD', `Kiosk sale: ${summaryText}`, { amount: total, group: groupId });
+
+        kioskCart = [];
+        renderKioskCart();
+        renderKioskGrid();
+        applyFilters();
+        renderAll();
+        renderAccessories();
+        renderStoreTotals();
+        updateStoreHistory();
+
+        showNotification(
+            `✅ Sale completed — ${formatPrice(total)}`,
+            'success',
+            7000,
+            createdTxIds.length === 1
+                ? [{ text: '🖨️ Receipt', onclick: `quickReceipt(${createdTxIds[0]})` }]
+                : null
+        );
+    } catch (err) {
+        showNotification('Checkout failed: ' + err.message, 'error');
+    }
+}
+
+
+// ============================================================
+// INIT
+// ============================================================
+loadProducts();
+
+let dropdownData = {
+    models: ['VIOS', 'INNOVA', 'HILUX', 'XPANDER', 'AVANZA', 'MIRAGE', 'MONTERO', 'FORTUNER', 'BRV', 'WIGO', 'NV350', 'HIACE', 'RUSH', 'RAIZE', 'VELOZ'],
+    services: [],
+    other: ['ACIDRAIN', 'BACKTOZERO', 'BTZ', 'ENGINEWASH', 'MACHINEWAX', 'HANDWAX', 'HEADLIGHT REST.', 'SEAT COVER'],
+    carwasher: ['JAYSON', 'DENNIS', 'JOMAR', 'RODEL', 'JUSTINE', 'JM', 'PHILIP', 'KURT', 'ADING', 'HART']
+};
+
+// ============================================================
+// DATE HELPERS
+// ============================================================
+function getTodayKey() {
+    const d = new Date();
+    return d.getFullYear() + '-' +
+        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0');
+}
+
+function toLocalDateKey(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    return d.getFullYear() + '-' +
+        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0');
+}
+
+function isToday(dateStr) {
+    if (!dateStr) return false;
+    return toLocalDateKey(dateStr) === getTodayKey();
+}
+
+function formatDateKey(dateKey) {
+    if (!dateKey) return '—';
+    const d = new Date(dateKey + 'T00:00:00');
+    const today = new Date();
+    if (toLocalDateKey(d) === toLocalDateKey(today)) return 'Today';
+    const y = new Date(today); y.setDate(today.getDate() - 1);
+    if (toLocalDateKey(d) === toLocalDateKey(y)) return 'Yesterday';
+    return d.toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric',
+        year: d.getFullYear() !== today.getFullYear() ? 'numeric' : undefined
+    });
+}
+// ============================================================
+// FLOATING ACTION BAR
+// ============================================================
+function toggleFabDock() {
+    const dock = document.getElementById('fabDock');
+    if (!dock) return;
+    const isOpen = dock.classList.contains('open');
+    if (isOpen) closeFabDock();
+    else openFabDock();
+}
+
+function openFabDock() {
+    document.getElementById('fabDock')?.classList.add('open');
+    const icon = document.getElementById('fabMainIcon');
+    if (icon) icon.className = 'fas fa-times';
+    document.body.classList.add('fab-open');
+}
+
+function closeFabDock() {
+    document.getElementById('fabDock')?.classList.remove('open');
+    const icon = document.getElementById('fabMainIcon');
+    if (icon) icon.className = 'fas fa-plus';
+    document.body.classList.remove('fab-open');
+}
+
+function fabAction(action) {
+    closeFabDock();
+    setTimeout(() => {
+        if (action === 'new') openAddModal();
+        else if (action === 'quick') openQuickAdd();
+        else if (action === 'refresh') refreshData();
+        else if (action === 'tour') startTour();
+    }, 180);
+}
+
+// Auto-close on escape
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeFabDock();
+});
+
+// ============================================================
+// ANIMATED NUMBER COUNTERS
+// ============================================================
+function animateValue(el, from, to, duration = 700, formatter = null) {
+    if (!el) return;
+    const start = performance.now();
+    const diff = to - from;
+    function tick(now) {
+        const elapsed = now - start;
+        const progress = Math.min(elapsed / duration, 1);
+        // easeOutCubic
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const current = from + diff * eased;
+        el.textContent = formatter ? formatter(current) : Math.round(current).toLocaleString();
+        if (progress < 1) requestAnimationFrame(tick);
+        else el.textContent = formatter ? formatter(to) : Math.round(to).toLocaleString();
+    }
+    requestAnimationFrame(tick);
+}
+
+function animateMoney(el, targetAmount) {
+    if (!el) return;
+    const from = parseFloat(el.dataset.count || '0') || 0;
+    el.dataset.count = targetAmount;
+    animateValue(el, from, targetAmount, 700, (v) => formatPrice(v));
+}
+
+function animateCount(el, targetCount) {
+    if (!el) return;
+    const from = parseFloat(el.dataset.count || '0') || 0;
+    el.dataset.count = targetCount;
+    animateValue(el, from, targetCount, 700, (v) => Math.round(v).toString());
+}
+// ============================================================
+// PRICE FORMATTER
 // ============================================================
 function formatPrice(amount) {
     if (amount === undefined || amount === null || isNaN(amount)) return '₱0.00';
@@ -335,7 +725,75 @@ function formatPrice(amount) {
 }
 
 // ============================================================
-// SERVICE PRICES
+// PARTIAL PAYMENT HELPERS
+// ============================================================
+function getBalanceDue(tx) {
+    const paid = parseFloat(tx.amount_paid) || 0;
+    const total = parseFloat(tx.total) || 0;
+    return Math.max(0, total - paid);
+}
+
+let partialPaymentResolver = null;
+
+function promptPartialPayment({ total, currentStatus, currentPaid, title }) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('partialPaymentModal');
+        if (!modal) { resolve(null); return; }
+
+        document.getElementById('partialTitle').textContent = title || 'Partial Payment';
+        document.getElementById('partialTotalDisplay').textContent = formatPrice(total);
+        const paidInput = document.getElementById('partialAmountPaid');
+        const noteInput = document.getElementById('partialNote');
+        const errEl = document.getElementById('partialError');
+        const balanceEl = document.getElementById('partialBalanceDisplay');
+        const fromEl = document.getElementById('partialFromStatus');
+
+        paidInput.value = currentPaid != null ? currentPaid : '';
+        noteInput.value = '';
+        errEl.textContent = '';
+        fromEl.textContent = (currentStatus || 'unpaid').toUpperCase();
+        updateBalancePreview();
+
+        function updateBalancePreview() {
+            const p = parseFloat(paidInput.value) || 0;
+            const bal = Math.max(0, total - p);
+            balanceEl.textContent = formatPrice(bal);
+            balanceEl.className = bal > 0 ? 'text-warning' : 'text-success';
+        }
+        paidInput.oninput = updateBalancePreview;
+
+        partialPaymentResolver = (res) => {
+            closePartialPaymentModal();
+            resolve(res);
+        };
+        modal.classList.add('active');
+        setTimeout(() => paidInput.focus(), 150);
+    });
+}
+
+function closePartialPaymentModal() {
+    document.getElementById('partialPaymentModal')?.classList.remove('active');
+    partialPaymentResolver = null;
+}
+
+function confirmPartialPayment() {
+    const paidInput = document.getElementById('partialAmountPaid');
+    const noteInput = document.getElementById('partialNote');
+    const errEl = document.getElementById('partialError');
+    const total = parseFloat(document.getElementById('partialTotalValue').value) || 0;
+
+    const paid = parseFloat(paidInput.value);
+    const note = noteInput.value.trim();
+
+    if (isNaN(paid) || paid < 0) { errEl.textContent = 'Enter a valid amount paid'; return; }
+    if (paid > total) { errEl.textContent = `Amount cannot exceed total ${formatPrice(total)}`; return; }
+    if (!note) { errEl.textContent = 'Please add a note explaining the partial payment'; return; }
+
+    if (partialPaymentResolver) partialPaymentResolver({ amountPaid: paid, note });
+}
+
+// ============================================================
+// STATIC SERVICE PRICES
 // ============================================================
 function getStaticServicePrices() {
     return [
@@ -397,942 +855,605 @@ function getStaticServicePrices() {
     ];
 }
 
-function getSizeOptions() {
-    return ['Small', 'Medium', 'Large', 'XLarge', 'XXLarge'];
-}
-
-// ============================================================
-// LOGIN FUNCTIONS (Async - Database Priority)
-// ============================================================
-async function handleLogin(e) {
-    e.preventDefault();
-    console.log('🔐 Login attempt...');
-    
-    const username = document.getElementById('loginUsername').value.trim();
-    const password = document.getElementById('loginPassword').value.trim();
-    const errorEl = document.getElementById('loginError');
-    const loginBtn = document.querySelector('#loginForm button[type="submit"]');
-    
-    errorEl.textContent = '';
-    
-    if (!username || !password) {
-        showNotification('Please enter both username and password', 'warning');
-        errorEl.textContent = '❌ Please enter both username and password';
-        return;
-    }
-    
-    if (typeof authenticateUser === 'undefined') {
-        showNotification('System error. Please refresh the page.', 'error');
-        errorEl.textContent = '⚠️ System error. Please refresh the page.';
-        return;
-    }
-    
-    // Disable button and show loading
-    if (loginBtn) {
-        loginBtn.disabled = true;
-        loginBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in...';
-    }
-    
-    try {
-        let user = null;
-        
-        // Try async authentication first (database)
-        if (typeof authenticateUser === 'function') {
-            const authResult = authenticateUser(username, password);
-            
-            // Check if it's a Promise (async)
-            if (authResult && typeof authResult.then === 'function') {
-                user = await authResult;
-            } else {
-                user = authResult;
-            }
-        }
-        
-        if (user) {
-            currentUser = { username, ...user };
-            errorEl.textContent = '';
-            
-            // Save session
-            saveSession(currentUser);
-            
-            // Show main app
-            document.getElementById('loginScreen').style.display = 'none';
-            document.getElementById('mainApp').style.display = 'block';
-            
-            // Initialize the app
-            initializeApp();
-            
-            // Update UI
-            updateUIForRole();
-            updateAuditBadge();
-            
-            // Log login (skip for admin)
-            if (!isAdmin(currentUser)) {
-                logAudit('LOGIN', 'User logged in successfully', { username: username, name: user.name });
-            }
-            
-            showNotification(`Welcome back, ${user.name}!`, 'success');
-            console.log('✅ Login successful for:', username);
-        } else {
-            console.log('❌ Login failed for:', username);
-            showNotification('Invalid username or password', 'error');
-            errorEl.textContent = '❌ Invalid username or password';
-            const loginBox = document.querySelector('.login-box');
-            if (loginBox) {
-                loginBox.style.animation = 'shake 0.5s ease';
-                setTimeout(() => { loginBox.style.animation = ''; }, 500);
-            }
-        }
-    } catch (err) {
-        console.error('❌ Login error:', err);
-        showNotification('Login error: ' + err.message, 'error');
-        errorEl.textContent = '❌ Login error. Please try again.';
-    } finally {
-        // Re-enable button
-        if (loginBtn) {
-            loginBtn.disabled = false;
-            loginBtn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Sign In';
-        }
-    }
-}
-
-function handleLogout() {
-    if (!confirm('Are you sure you want to logout?')) return;
-    
-    if (currentUser && !isAdmin(currentUser)) {
-        logAudit('LOGOUT', 'User logged out', { 
-            username: currentUser.username, 
-            name: currentUser.name 
-        });
-    }
-    
-    stopAutoBackup();
-    currentUser = null;
-    dataLoaded = false;
-    transactions = [];
-    filteredTransactions = [];
-    auditLogs = [];
-    filteredAuditLogs = [];
-    selectedIds = new Set();
-    
-    clearSession();
-    
-    document.getElementById('mainApp').style.display = 'none';
-    document.getElementById('loginScreen').style.display = 'flex';
-    
-    const loginForm = document.getElementById('loginForm');
-    if (loginForm) loginForm.reset();
-    const errorEl = document.getElementById('loginError');
-    if (errorEl) errorEl.textContent = '';
-    
-    const container = document.getElementById('notificationContainer');
-    if (container) container.innerHTML = '';
-    
-    showNotification('Logged out successfully', 'info');
-    console.log('👋 User logged out');
-}
-
 // ============================================================
 // INITIALIZATION
 // ============================================================
-function initializeApp() {
-    console.log('🔄 Initializing app...');
-    populateAllDropdowns();
-    loadData();
-    updateUIForRole();
-    if (currentUser) {
-        saveSession(currentUser);
-    }
-}
+document.addEventListener('DOMContentLoaded', function () {
+    const dateEl = document.getElementById('currentDate');
+    if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', {
+        weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
+    });
 
-document.addEventListener('DOMContentLoaded', function() {
-    console.log('🚀 App initializing...');
-    
-    // Initialize Supabase
+    ongoingViewDate = getTodayKey();
+    completedViewDate = getTodayKey();
+
     initializeSupabase();
-    
-    // Load users from storage
-    if (typeof loadUsersFromStorage === 'function') {
-        loadUsersFromStorage();
-    }
-    
-    // Check for existing session
+    populateAllDropdowns();
+    loadServicePrices();
+    loadAuditLogs();
+    loadBackupHistory();
+    setupModalCloseListeners();
+    initializeSalaryDateRange();
+    loadStoreData();
+
+    const ongoingInput = document.getElementById('ongoingDateFilter');
+    if (ongoingInput) ongoingInput.value = getTodayKey();
+    const completedInput = document.getElementById('completedDateFilter');
+    if (completedInput) completedInput.value = getTodayKey();
+
     const savedUser = getSession();
     if (savedUser) {
-        console.log('🔄 Session found for user:', savedUser.username);
         currentUser = savedUser;
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('mainApp').style.display = 'block';
-        
-        // Initialize everything
-        populateAllDropdowns();
-        loadServicePrices();
-        loadAuditLogs();
-        loadBackupHistory();
-        setupModalCloseListeners();
-        loadData();
-        updateUIForRole();
-        updateAuditBadge();
-        showNotification(`Welcome back, ${currentUser.name}!`, 'success');
-    } else {
-        console.log('🔄 No session found, showing login');
-        document.getElementById('loginScreen').style.display = 'flex';
-        document.getElementById('mainApp').style.display = 'none';
-        populateAllDropdowns();
-        loadServicePrices();
-        loadAuditLogs();
-        loadBackupHistory();
-        setupModalCloseListeners();
+        initializeApp();
     }
-    
-    const dateEl = document.getElementById('currentDate');
-    if (dateEl) {
-        dateEl.textContent = new Date().toLocaleDateString('en-US', {
-            weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
-        });
-    }
+	// Initialize report period on load
+	setReportPreset('daily');
 });
 
+function initializeApp() {
+    populateAllDropdowns();
+    loadData();
+    updateUIForRole();
+    updateAuditBadge();
+    checkFirstTimeTour();
+}
+
 function setupModalCloseListeners() {
-    const modals = ['transactionModal', 'quickAddModal', 'auditDetailModal', 'confirmModal'];
+    const modals = ['transactionModal', 'quickAddModal', 'confirmModal', 'accessoryModal', 'addServiceModal', 'receiptModal', 'storeItemModal', 'partialPaymentModal', 'carwasherJobsModal'];
     modals.forEach(id => {
         const el = document.getElementById(id);
-        if (el) {
-            el.addEventListener('click', function(e) {
-                if (e.target === this) {
-                    if (id === 'transactionModal') closeModal();
-                    else if (id === 'quickAddModal') closeQuickAdd();
-                    else if (id === 'auditDetailModal') closeAuditDetail();
-                    else if (id === 'confirmModal') closeConfirm();
-                }
-            });
-        }
+        if (!el) return;
+        el.addEventListener('click', function (e) {
+            if (e.target !== this) return;
+            if (id === 'transactionModal') closeModal();
+            else if (id === 'quickAddModal') closeQuickAdd();
+            else if (id === 'confirmModal') closeConfirm();
+            else if (id === 'accessoryModal') closeAccessoryModal();
+            else if (id === 'addServiceModal') closeAddServiceModal();
+            else if (id === 'receiptModal') closeReceiptModal();
+            else if (id === 'storeItemModal') closeStoreItemModal();
+            else if (id === 'partialPaymentModal') closePartialPaymentModal();
+            else if (id === 'carwasherJobsModal') closeCarwasherJobsModal();
+        });
     });
 }
 
+// ============================================================
+// AUTH
+// ============================================================
+function saveSession(user) {
+    if (!user) { localStorage.removeItem(SESSION_KEY); return; }
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ user, expires: Date.now() + SESSION_EXPIRY }));
+}
+
+function getSession() {
+    try {
+        const data = localStorage.getItem(SESSION_KEY);
+        if (!data) return null;
+        const session = JSON.parse(data);
+        if (Date.now() > session.expires) { localStorage.removeItem(SESSION_KEY); return null; }
+        return session.user;
+    } catch (e) { return null; }
+}
+
+function clearSession() { localStorage.removeItem(SESSION_KEY); }
+
+function handleLogin(e) {
+    e.preventDefault();
+    const username = document.getElementById('loginUsername').value.trim();
+    const password = document.getElementById('loginPassword').value.trim();
+    const errorEl = document.getElementById('loginError');
+    errorEl.textContent = '';
+
+    if (typeof authenticateUser === 'undefined') {
+        showNotification('System error. Please refresh.', 'error');
+        return;
+    }
+    const user = authenticateUser(username, password);
+    if (user) {
+        currentUser = { username, ...user };
+        saveSession(currentUser);
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('mainApp').style.display = 'block';
+        initializeApp();
+        logAudit('LOGIN', 'User logged in', { username });
+        showNotification(`Welcome back, ${user.name}!`, 'success');
+    } else {
+        errorEl.textContent = '❌ Invalid username or password';
+        const box = document.querySelector('.login-box');
+        box.style.animation = 'shake 0.5s ease';
+        setTimeout(() => box.style.animation = '', 500);
+    }
+}
+
+async function handleLogout() {
+    const ok = await showConfirm({
+        icon: '🚪', title: 'Logout', message: 'Are you sure you want to logout?',
+        details: { transaction: currentUser?.name || '—', amount: '—', status: '—' },
+        buttonClass: 'btn-danger', buttonText: '<i class="fas fa-sign-out-alt"></i> Logout'
+    });
+    if (!ok) return;
+    if (currentUser) logAudit('LOGOUT', 'User logged out', { username: currentUser.username });
+    clearSession();
+    currentUser = null;
+    document.getElementById('mainApp').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('loginForm').reset();
+}
+
+function updateUIForRole() {
+    const isAdminUser = isAdmin(currentUser) || isManager(currentUser);
+    document.querySelectorAll('.admin-only').forEach(el => el.style.display = isAdminUser ? '' : 'none');
+    const role = isAdmin(currentUser) ? 'ADMIN' : isManager(currentUser) ? 'MANAGER' : 'STAFF';
+    const roleEl = document.getElementById('sidebarUserRole');
+    if (roleEl) roleEl.textContent = role;
+    const nameEl = document.getElementById('sidebarUserName');
+    if (nameEl) nameEl.textContent = getUserDisplayName(currentUser);
+    const pages = getUserPages(currentUser);
+    document.querySelectorAll('.nav-item').forEach(item => {
+        const page = item.getAttribute('data-page');
+        item.style.display = (page && pages.includes(page)) ? '' : 'none';
+    });
+}
 
 // ============================================================
-// SUPABASE INITIALIZATION (Updated with sync)
+// SUPABASE
 // ============================================================
 function initializeSupabase() {
     try {
-        const isConfigured = SUPABASE_URL && !SUPABASE_URL.includes('your-project') && 
-                           SUPABASE_ANON_KEY && !SUPABASE_ANON_KEY.includes('your-anon');
-        
-        if (isConfigured && window.supabase) {
+        const ok = SUPABASE_URL && !SUPABASE_URL.includes('your-project') && SUPABASE_ANON_KEY && !SUPABASE_ANON_KEY.includes('your-anon');
+        if (ok && window.supabase) {
             supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-            console.log('✅ Supabase client initialized');
             isSupabaseConnected = true;
-            updateStatus('✅ Connected', 'connected');
-            
-            // Connect users module to Supabase (triggers sync)
             if (typeof setSupabaseUsersClient === 'function') {
                 setSupabaseUsersClient(supabaseClient, true);
-                console.log('✅ Users module connected to Supabase (sync starting)');
+            }
+            const sb = document.getElementById('statusBadge');
+            if (sb) {
+                sb.textContent = '✅ Connected';
+                sb.className = 'status-badge connected';
             }
         } else {
-            console.warn('⚠️ Supabase not configured');
-            updateStatus('📄 Offline Mode', '');
-            supabaseClient = null;
-            isSupabaseConnected = false;
-            
             if (typeof setSupabaseUsersClient === 'function') {
                 setSupabaseUsersClient(null, false);
             }
-        }
-    } catch (error) {
-        console.error('❌ Supabase error:', error);
-        updateStatus('❌ Error', 'error');
-        supabaseClient = null;
-        isSupabaseConnected = false;
-        
-        if (typeof setSupabaseUsersClient === 'function') {
-            setSupabaseUsersClient(null, false);
-        }
-    }
-}
-
-// ============================================================
-// MANUAL SYNC TRIGGER (add to settings or user management page)
-// ============================================================
-async function syncUsersNow() {
-    if (typeof forceSyncNow === 'function') {
-        showNotification('Syncing users...', 'info');
-        const result = await forceSyncNow();
-        
-        if (result.success) {
-            showNotification(
-                `✅ Sync complete! Added: ${result.added}, Updated: ${result.updated}, From DB: ${result.synced}`,
-                'success'
-            );
-        } else {
-            showNotification('⚠️ Sync failed: ' + (result.reason || result.error), 'warning');
-        }
-        return result;
-    }
-    return { success: false, reason: 'sync_not_available' };
-}
-
-window.syncUsersNow = syncUsersNow;
-
-function updateStatus(text, type = '') {
-    const badge = document.getElementById('statusBadge');
-    if (badge) {
-        badge.textContent = text;
-        badge.className = 'status-badge';
-        if (type) badge.classList.add(type);
-    }
-}
-
-// ============================================================
-// UI UPDATE
-// ============================================================
-function updateUIForRole() {
-    const isAdminUser = isAdmin(currentUser);
-    const isManagerUser = isManager(currentUser);
-    
-    document.querySelectorAll('.admin-only').forEach(el => {
-        el.style.display = (isAdminUser || isManagerUser) ? '' : 'none';
-    });
-    
-    const roleDisplay = isAdminUser ? 'ADMIN' : isManagerUser ? 'MANAGER' : 'STAFF';
-    const sidebarRoleEl = document.getElementById('sidebarUserRole');
-    if (sidebarRoleEl) sidebarRoleEl.textContent = roleDisplay;
-    
-    const sidebarNameEl = document.getElementById('sidebarUserName');
-    if (sidebarNameEl) sidebarNameEl.textContent = getUserDisplayName(currentUser);
-    
-    updateNavigation();
-}
-
-function updateNavigation() {
-    const allowedPages = getUserPages(currentUser);
-    document.querySelectorAll('.nav-item').forEach(item => {
-        const page = item.getAttribute('data-page');
-        if (page && allowedPages.includes(page)) {
-            item.style.display = '';
-        } else if (page) {
-            item.style.display = 'none';
-        }
-    });
-}
-
-// ============================================================
-// AUDIT FUNCTIONS
-// ============================================================
-async function logAudit(action, description, details = {}) {
-    if (!currentUser) {
-        console.warn('No current user, skipping audit log');
-        return;
-    }
-    
-    if (action === 'LOGIN' && isAdmin(currentUser)) {
-        console.log('⏭️ Skipping audit log for admin login');
-        return;
-    }
-    
-    const logEntry = {
-        action,
-        description,
-        details: details || {},
-        username: currentUser.username,
-        user_name: currentUser.name,
-        user_role: currentUser.role,
-        created_at: new Date().toISOString()
-    };
-    
-    auditLogs.unshift(logEntry);
-    updateAuditBadge();
-    
-    if (supabaseClient && isSupabaseConnected) {
-        try {
-            await supabaseClient.from(AUDIT_TABLE).insert(logEntry);
-            console.log('✅ Audit log saved to database:', action);
-        } catch (err) {
-            console.warn('Could not save audit log to database:', err);
-        }
-    } else {
-        console.log('📝 Audit log saved locally:', action);
-    }
-}
-
-async function loadAuditLogs() {
-    try {
-        if (supabaseClient && isSupabaseConnected) {
-            const { data, error } = await supabaseClient
-                .from(AUDIT_TABLE)
-                .select('*')
-                .order('created_at', { ascending: false })
-                .limit(500);
-            
-            if (!error && data) {
-                auditLogs = data;
-                console.log(`✅ Loaded ${auditLogs.length} audit logs from database`);
+            const sb = document.getElementById('statusBadge');
+            if (sb) {
+                sb.textContent = '📄 Offline';
+                sb.className = 'status-badge';
             }
         }
-        filteredAuditLogs = [...auditLogs];
+    } catch (e) { isSupabaseConnected = false; }
+}
+
+async function loadData() {
+    showLoadingState(true);
+    try {
+        if (supabaseClient && isSupabaseConnected) {
+            const { data, error } = await supabaseClient.from(TABLE_NAME).select('*').order('created_at', { ascending: false });
+            if (!error && data) transactions = data;
+        }
+        await loadSalaryData();
+        await loadAuditLogs();
+        await loadOngoingTransactions();
+        await loadCompletedTransactions();
+
+        applyFilters();
+        renderAll();
+        renderSalaryTable();
         renderAuditLogs();
-        updateAuditBadge();
+        renderStoreTotals();
+        updateStoreHistory();
+        renderCompletedTable();
+        renderAccessories();
+        if (isAdmin(currentUser) || isManager(currentUser)) await calculateSalaries(true);
+
+        showLoadingState(false);
+        showNotification(`Loaded ${transactions.length} transactions`, 'success', 3000);
     } catch (err) {
-        console.warn('Could not load audit logs:', err);
+        console.error(err);
+        showLoadingState(false);
+        showNotification('Failed to load data', 'error');
     }
 }
 
-function updateAuditBadge() {
-    const badge = document.getElementById('auditBadge');
-    if (badge) {
-        badge.textContent = auditLogs.length > 0 ? auditLogs.length : '0';
+async function loadOngoingTransactions() {
+    try {
+        if (supabaseClient && isSupabaseConnected) {
+            const { data } = await supabaseClient.from(TABLE_NAME).select('*').eq('is_ongoing', true).order('started_at', { ascending: false });
+            if (data) ongoingTransactions = data;
+        } else {
+            ongoingTransactions = transactions.filter(t => t.is_ongoing === true);
+        }
+		
+		renderOngoingTable();
+		updateOngoingStats();
+		refreshBayPickerIfOpen();   // ✅ sync the picker if the modal is open
+		updateTransactionTabCounts();	
+    } catch (e) { console.warn(e); }
+}
+
+async function loadCompletedTransactions() {
+    try {
+        if (supabaseClient && isSupabaseConnected) {
+            const { data } = await supabaseClient.from(TABLE_NAME).select('*').eq('category', 'carwash').or('is_ongoing.is.null,is_ongoing.eq.false').order('created_at', { ascending: false });
+            if (data) completedTransactions = data;
+        } else {
+            completedTransactions = transactions.filter(t => t.category === 'carwash' && !t.is_ongoing);
+        }
+        filteredCompleted = [...completedTransactions];
+        updateCompletedStats();
+        renderCompletedTable();
+        updateTransactionTabCounts();
+    } catch (e) { console.warn(e); }
+}
+
+function getOngoingForView() {
+    return ongoingTransactions.filter(t => {
+        const d = t.started_at || t.created_at;
+        return toLocalDateKey(d) === ongoingViewDate;
+    });
+}
+// ============================================================
+// BAY PICKER
+// ============================================================
+const BAY_COUNT = 4;
+
+/**
+ * Returns a Set of bay numbers currently occupied by ongoing washes.
+ * @param {number|null} excludeTxId - treat this tx as not occupying (used when editing)
+ */
+function getOccupiedBays(excludeTxId = null) {
+    const occupied = new Set();
+    ongoingTransactions.forEach(t => {
+        if (!t.bay) return;
+        if (excludeTxId != null && t.id === excludeTxId) return;
+        occupied.add(Number(t.bay));
+    });
+    return occupied;
+}
+
+/**
+ * Render the bay picker buttons.
+ * @param {number|null} selectedBay - currently selected bay
+ * @param {number|null} excludeTxId - ignore this transaction's own occupancy
+ */
+function renderBayPicker(selectedBay = null, excludeTxId = null) {
+    const picker = document.getElementById('bayPicker');
+    const hint = document.getElementById('bayPickerHint');
+    const hidden = document.getElementById('formBay');
+    if (!picker) return;
+
+    const occupied = getOccupiedBays(excludeTxId);
+
+    picker.innerHTML = '';
+    for (let i = 1; i <= BAY_COUNT; i++) {
+        const isOccupied = occupied.has(i);
+        const isSelected = Number(selectedBay) === i;
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'bay-btn';
+        if (isOccupied) btn.classList.add('occupied');
+        if (isSelected) btn.classList.add('selected');
+        btn.dataset.bay = i;
+        btn.disabled = isOccupied;
+        btn.setAttribute('aria-label', `Bay ${i}${isOccupied ? ' (occupied)' : ''}`);
+        btn.innerHTML = `
+            <span class="bay-num">${i}</span>
+            <span class="bay-status">${isOccupied ? 'Occupied' : 'Available'}</span>
+        `;
+        btn.onclick = () => selectBay(i, excludeTxId);
+        picker.appendChild(btn);
+    }
+
+    if (hidden) hidden.value = selectedBay != null ? selectedBay : '';
+
+    if (hint) {
+        if (occupied.size >= BAY_COUNT) {
+            hint.innerHTML = '<i class="fas fa-exclamation-triangle"></i> All bays are occupied';
+            hint.classList.add('all-occupied');
+        } else if (occupied.size > 0) {
+            const avail = Array.from({ length: BAY_COUNT }, (_, i) => i + 1).filter(b => !occupied.has(b));
+            hint.innerHTML = `<i class="fas fa-info-circle"></i> Available: ${avail.join(', ')}`;
+            hint.classList.remove('all-occupied');
+        } else {
+            hint.innerHTML = '<i class="fas fa-info-circle"></i> All bays are available';
+            hint.classList.remove('all-occupied');
+        }
     }
 }
 
-function getAuditActionClass(action) {
-    const classes = {
-        'LOGIN': 'badge-success',
-        'LOGOUT': 'badge-warning',
-        'ADD': 'badge-primary',
-        'UPDATE': 'badge-info',
-        'DELETE': 'badge-danger',
-        'PRICE_UPDATE': 'badge-price_update',
-        'SALARY_UPDATE': 'badge-salary_update',
-        'STORE_UPDATE': 'badge-store_update',
-        'STATUS_UPDATE': 'badge-warning',
-        'BACKUP': 'badge-info',
-        'RESTORE': 'badge-danger'
-    };
-    return classes[action] || 'badge-other';
+function selectBay(bay, excludeTxId = null) {
+    const occupied = getOccupiedBays(excludeTxId);
+    if (occupied.has(Number(bay))) {
+        showNotification(`Bay ${bay} is currently occupied`, 'warning');
+        return;
+    }
+    const hidden = document.getElementById('formBay');
+    if (hidden) hidden.value = bay;
+
+    // Update visual selection
+    document.querySelectorAll('#bayPicker .bay-btn').forEach(btn => {
+        btn.classList.toggle('selected', Number(btn.dataset.bay) === Number(bay));
+    });
 }
 
-function getAuditActionEmoji(action) {
-    const emojis = {
-        'LOGIN': '🔐',
-        'LOGOUT': '🚪',
-        'ADD': '✅',
-        'UPDATE': '📝',
-        'DELETE': '🗑️',
-        'PRICE_UPDATE': '💰',
-        'SALARY_UPDATE': '💵',
-        'STORE_UPDATE': '🏪',
-        'STATUS_UPDATE': '🔄',
-        'BACKUP': '💾',
-        'RESTORE': '📂'
-    };
-    return emojis[action] || '📋';
+// Re-check availability any time ongoing data changes
+function refreshBayPickerIfOpen() {
+    const modal = document.getElementById('transactionModal');
+    if (!modal || !modal.classList.contains('active')) return;
+    const editId = document.getElementById('editId')?.value;
+    const current = document.getElementById('formBay')?.value;
+    renderBayPicker(current || null, editId ? parseInt(editId) : null);
+}
+// ============================================================
+// TABS
+// ============================================================
+function switchTransactionTab(tab) {
+    currentTransactionTab = tab;
+    document.querySelectorAll('.transaction-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
+    document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === `tab-${tab}`));
+
+    if (tab === 'ongoing') {
+        const input = document.getElementById('ongoingDateFilter');
+        if (input && !input.value) {
+            input.value = getTodayKey();
+            ongoingViewDate = getTodayKey();
+        }
+        loadOngoingTransactions().then(() => {
+            renderOngoingTable();
+            updateOngoingStats();
+        });
+    } else if (tab === 'completed') {
+        const input = document.getElementById('completedDateFilter');
+        if (input && !input.value) {
+            input.value = getTodayKey();
+            completedViewDate = getTodayKey();
+        }
+        loadCompletedTransactions().then(() => {
+            renderCompletedTable();
+            updateCompletedStats();
+        });
+    } else {
+        renderTable();
+    }
 }
 
-function getAuditActionLabel(action) {
-    const labels = {
-        'LOGIN': 'Login',
-        'LOGOUT': 'Logout',
-        'ADD': 'Transaction Added',
-        'UPDATE': 'Transaction Updated',
-        'DELETE': 'Transaction Deleted',
-        'PRICE_UPDATE': 'Price Update',
-        'SALARY_UPDATE': 'Salary Update',
-        'STORE_UPDATE': 'Store Update',
-        'STATUS_UPDATE': 'Status Update',
-        'BACKUP': 'Database Backup',
-        'RESTORE': 'Database Restore'
-    };
-    return labels[action] || action;
+function updateTransactionTabCounts() {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('allTabCount', transactions.length);
+    set('ongoingTabCount', ongoingTransactions.length);
+    set('completedTabCount', completedTransactions.length);
+    set('ongoingCount', ongoingTransactions.length);
+    set('totalTransactions', transactions.length);
+    set('txBadge', transactions.length);
 }
 
 // ============================================================
-// DROPDOWN MANAGEMENT
+// DROPDOWNS
 // ============================================================
 function populateAllDropdowns() {
-    ['formModel', 'formServices', 'formOther', 'formCarwasher', 'formDetailer'].forEach(id => {
-        const keyMap = { 
-            formModel: 'models', 
-            formServices: 'services', 
-            formOther: 'other', 
-            formCarwasher: 'carwasher', 
-            formDetailer: 'detailer' 
-        };
+    const map = { formModel: 'models', formCarwasher: 'carwasher' };
+    Object.entries(map).forEach(([id, key]) => {
         const select = document.getElementById(id);
         if (!select) return;
-        const currentValue = select.value;
+        const current = select.value;
         select.innerHTML = '<option value="">Select...</option>';
-        dropdownData[keyMap[id]].forEach(item => {
-            const option = document.createElement('option');
-            option.value = item;
-            option.textContent = item;
-            select.appendChild(option);
+        (dropdownData[key] || []).forEach(item => {
+            const opt = document.createElement('option');
+            opt.value = item;
+            opt.textContent = item;
+            select.appendChild(opt);
         });
-        if (currentValue) select.value = currentValue;
+        if (current) select.value = current;
     });
     populateServiceDropdowns();
-    populateSizeOptions();
-}
-
-function addDropdownItem(type) {
-    if (!checkPermission('edit')) return;
-    const promptMap = { 
-        model: 'Enter new car model:', 
-        services: 'Enter new service:', 
-        other: 'Enter new other service:', 
-        carwasher: 'Enter new carwasher name:', 
-        detailer: 'Enter new detailer name:' 
-    };
-    const newItem = prompt(promptMap[type] || 'Enter new item:');
-    if (!newItem || !newItem.trim()) return;
-    const trimmed = newItem.trim();
-    const keyMap = { 
-        model: 'models', 
-        services: 'services', 
-        other: 'other', 
-        carwasher: 'carwasher', 
-        detailer: 'detailer' 
-    };
-    const arrayKey = keyMap[type];
-    if (!dropdownData[arrayKey].includes(trimmed)) {
-        dropdownData[arrayKey].push(trimmed);
-        dropdownData[arrayKey].sort();
-        populateAllDropdowns();
-        const formIdMap = { 
-            model: 'formModel', 
-            services: 'formServices', 
-            other: 'formOther', 
-            carwasher: 'formCarwasher', 
-            detailer: 'formDetailer' 
-        };
-        const select = document.getElementById(formIdMap[type]);
-        if (select) select.value = trimmed;
-        showNotification(`Added "${trimmed}" to ${type} list`, 'success');
-        logAudit('UPDATE', `Added new ${type}: "${trimmed}"`, { type, value: trimmed });
-    } else {
-        showNotification(`"${trimmed}" already exists`, 'warning');
-    }
 }
 
 function populateServiceDropdowns() {
     const select = document.getElementById('formServices');
     if (!select) return;
-
-    const currentValue = select.value;
-    select.innerHTML = '<option value="">Select services...</option>';
-
-    const categories = {};
-    servicePrices.forEach(service => {
-        if (!categories[service.service_category]) categories[service.service_category] = [];
-        categories[service.service_category].push(service);
+    select.innerHTML = '<option value="">Select service & size...</option>';
+    servicePrices.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify({ name: s.service_name, size: s.size_category, price: s.price, category: s.service_category });
+        opt.textContent = `${s.service_name} - ${s.size_category} (₱${s.price})`;
+        select.appendChild(opt);
     });
-
-    Object.keys(categories).forEach(category => {
-        const optgroup = document.createElement('optgroup');
-        optgroup.label = category;
-        const serviceNames = [...new Set(categories[category].map(s => s.service_name))];
-        serviceNames.forEach(name => {
-            const option = document.createElement('option');
-            option.value = name;
-            option.textContent = name;
-            optgroup.appendChild(option);
-        });
-        select.appendChild(optgroup);
-    });
-
-    if (currentValue) select.value = currentValue;
-}
-
-function populateSizeOptions() {
-    const select = document.getElementById('formSize');
-    if (!select) return;
-    const currentValue = select.value;
-    const sizes = getSizeOptions();
-    select.innerHTML = '<option value="">Select size...</option>';
-    sizes.forEach(size => {
-        const option = document.createElement('option');
-        option.value = size;
-        option.textContent = size;
-        select.appendChild(option);
-    });
-    if (currentValue) select.value = currentValue;
-}
-
-// ============================================================
-// SERVICES LOGIC
-// ============================================================
-function checkForDetailingServices() {
-    const hasDetailing = selectedServices.some(s => 
-        s.category === 'Detailing' || 
-        ['Acid Rain Removal', 'Back to Zero Disinfectant', 'Engine Detailing Wash', 
-         'Head Light Restoration', 'Asphalt Removal - Claybar', 'Interior Detailing', 
-         'Exterior Detailing 3 Step Buff', 'Under Wash'].includes(s.service_name)
-    );
-    
-    isDetailerRequired = hasDetailing;
-    
-    const detailerLabel = document.getElementById('detailerRequired');
-    const detailerOptional = document.getElementById('detailerOptional');
-    const detailerNote = document.getElementById('detailerNote');
-    const detailerSelect = document.getElementById('formDetailer');
-    
-    if (detailerLabel) detailerLabel.style.display = hasDetailing ? 'inline' : 'none';
-    if (detailerOptional) detailerOptional.style.display = hasDetailing ? 'none' : 'inline';
-    if (detailerNote) detailerNote.style.display = hasDetailing ? 'block' : 'none';
-    if (detailerSelect) {
-        if (hasDetailing) {
-            detailerSelect.setAttribute('required', 'required');
-        } else {
-            detailerSelect.removeAttribute('required');
-        }
-    }
-    
-    return { hasDetailing };
 }
 
 function addServiceToSelection() {
-    const serviceSelect = document.getElementById('formServices');
-    const sizeSelect = document.getElementById('formSize');
-    const selectedService = serviceSelect.value;
-    const selectedSize = sizeSelect.value;
-
-    if (!selectedService || !selectedSize) {
-        showNotification('Please select a service and size', 'warning');
-        return;
-    }
-
-    const priceEntry = servicePrices.find(s =>
-        s.service_name === selectedService &&
-        s.size_category === selectedSize
-    );
-
-    if (!priceEntry) {
-        showNotification('Price not found for this combination', 'error');
-        return;
-    }
-
-    const existing = selectedServices.find(s => s.service_name === selectedService && s.size === selectedSize);
-    if (existing) {
+    const select = document.getElementById('formServices');
+    if (!select || !select.value) { showNotification('Please select a service', 'warning'); return; }
+    let data; try { data = JSON.parse(select.value); } catch { return; }
+    if (selectedServices.find(s => s.service_name === data.name && s.size === data.size)) {
         showNotification('Service already added', 'warning');
         return;
     }
-
-    selectedServices.push({
-        service_name: selectedService,
-        size: selectedSize,
-        price: priceEntry.price,
-        category: priceEntry.service_category
-    });
-
+    selectedServices.push({ service_name: data.name, size: data.size, price: data.price, category: data.category });
     updateSelectedServicesDisplay();
     updateServiceTotal();
     calculateCarwashTotal();
-    checkForDetailingServices();
+    select.value = '';
 }
 
-function removeServiceFromSelection(index) {
-    selectedServices.splice(index, 1);
+function removeServiceFromSelection(i) {
+    selectedServices.splice(i, 1);
     updateSelectedServicesDisplay();
     updateServiceTotal();
     calculateCarwashTotal();
-    checkForDetailingServices();
 }
 
 function updateSelectedServicesDisplay() {
-    const container = document.getElementById('selectedServicesContainer');
-    if (!container) return;
-
+    const c = document.getElementById('selectedServicesContainer');
+    if (!c) return;
     if (selectedServices.length === 0) {
-        container.innerHTML = '<span style="color:#94a3b8;font-size:0.85rem;">No services selected</span>';
+        c.innerHTML = '<span style="color:#94a3b8;font-size:0.85rem;">No services selected</span>';
         return;
     }
-
-    container.innerHTML = '';
-    selectedServices.forEach((service, index) => {
+    c.innerHTML = '';
+    selectedServices.forEach((s, i) => {
         const tag = document.createElement('span');
         tag.className = 'service-tag';
-        const isDetailing = service.category === 'Detailing' || 
-            ['Acid Rain Removal', 'Back to Zero Disinfectant', 'Engine Detailing Wash', 
-             'Head Light Restoration', 'Asphalt Removal - Claybar', 'Interior Detailing', 
-             'Exterior Detailing 3 Step Buff', 'Under Wash'].includes(service.service_name);
-        
-        let icon = '🛠️';
-        if (isDetailing) icon = '🔧';
-        else if (service.category === 'Wax') icon = '✨';
-        else if (service.category === 'Carwash') icon = '🧼';
-        
-        tag.innerHTML = `
-            ${icon} ${service.service_name} (${service.size}) - ${formatPrice(service.price)}
-            <span class="remove-btn" onclick="removeServiceFromSelection(${index})">×</span>
-        `;
-        container.appendChild(tag);
+        tag.innerHTML = `${s.service_name} (${s.size}) - ${formatPrice(s.price)} <span class="remove-btn" onclick="removeServiceFromSelection(${i})">×</span>`;
+        c.appendChild(tag);
     });
 }
 
 function updateServiceTotal() {
-    serviceTotal = selectedServices.reduce((sum, s) => sum + s.price, 0);
-    const display = document.getElementById('serviceTotalDisplay');
-    if (display) display.textContent = formatPrice(serviceTotal);
+    serviceTotal = selectedServices.reduce((s, x) => s + x.price, 0);
+    const d = document.getElementById('serviceTotalDisplay');
+    if (d) d.textContent = formatPrice(serviceTotal);
 }
 
-// ============================================================
-// STORE ORDER FUNCTIONS
-// ============================================================
-function addStoreItemToCarwash(name, price) {
-    const existing = storeOrderItems.find(item => item.name === name);
-    if (existing) {
-        existing.quantity = (existing.quantity || 1) + 1;
-    } else {
-        storeOrderItems.push({ name, price, quantity: 1 });
-    }
-    renderStoreOrderItems();
-    updateStoreOrderTotal();
-    calculateCarwashTotal();
-}
-
-function addCustomStoreItem() {
-    const name = document.getElementById('formStoreItemName').value.trim();
-    const price = parseFloat(document.getElementById('formStoreItemPrice').value);
-    if (!name || !price || price <= 0) {
-        showNotification('Please enter valid item name and price', 'warning');
-        return;
-    }
-
-    const existing = storeOrderItems.find(item => item.name === name);
-    if (existing) {
-        existing.quantity = (existing.quantity || 1) + 1;
-    } else {
-        storeOrderItems.push({ name, price, quantity: 1 });
-    }
-
-    renderStoreOrderItems();
-    updateStoreOrderTotal();
-    calculateCarwashTotal();
-    document.getElementById('formStoreItemName').value = '';
-    document.getElementById('formStoreItemPrice').value = '';
-}
-
-function removeStoreItem(index) {
-    storeOrderItems.splice(index, 1);
-    renderStoreOrderItems();
-    updateStoreOrderTotal();
-    calculateCarwashTotal();
-}
-
-function renderStoreOrderItems() {
-    const container = document.getElementById('storeItemsContainer');
-    if (!container) return;
-
-    if (storeOrderItems.length === 0) {
-        container.innerHTML = '<span style="color:#94a3b8;font-size:0.8rem;">No items added</span>';
-        return;
-    }
-
-    container.innerHTML = '';
-    storeOrderItems.forEach((item, index) => {
-        const tag = document.createElement('span');
-        tag.className = 'store-item-tag';
-        tag.innerHTML = `
-            <span class="item-name">${item.name}</span>
-            <span class="item-price">${formatPrice(item.price)}</span>
-            <span style="color:#94a3b8;font-size:0.65rem;">×${item.quantity || 1}</span>
-            <span class="remove-btn" onclick="removeStoreItem(${index})">×</span>
-        `;
-        container.appendChild(tag);
-    });
-}
-
-function updateStoreOrderTotal() {
-    const total = storeOrderItems.reduce((sum, item) => sum + (item.price * (item.quantity || 1)), 0);
-    const display = document.getElementById('storeOrderTotal');
-    if (display) display.textContent = formatPrice(total);
-}
-
-function clearStoreOrder() {
-    storeOrderItems = [];
-    renderStoreOrderItems();
-    updateStoreOrderTotal();
-    calculateCarwashTotal();
-}
-
-// ============================================================
-// CALCULATE FUNCTIONS
-// ============================================================
-function calculateCarwashTotal() {
-    const serviceTotal = selectedServices.reduce((sum, s) => sum + s.price, 0);
-    const storeTotal = storeOrderItems.reduce((sum, item) => sum + (item.price * (item.quantity || 1)), 0);
-    const total = serviceTotal + storeTotal;
-    const display = document.getElementById('formTotalDisplay');
-    if (display) display.textContent = formatPrice(total);
-}
-
-function calculateStoreTotal() {
-    const qty = parseFloat(document.getElementById('formQuantity').value) || 0;
-    const price = parseFloat(document.getElementById('formUnitPrice').value) || 0;
-    const display = document.getElementById('formStoreTotal');
-    if (display) display.value = formatPrice(qty * price);
-}
-
-// ============================================================
-// TOGGLE TRANSACTION FIELDS
-// ============================================================
 function toggleTransactionFields() {
-    const category = document.getElementById('formCategory').value;
-    const carwashFields = document.getElementById('carwashFields');
-    const storeFields = document.getElementById('storeFields');
-    
-    if (carwashFields) carwashFields.style.display = category === 'carwash' ? 'block' : 'none';
-    if (storeFields) storeFields.style.display = category !== 'carwash' ? 'block' : 'none';
-
-    if (category === 'carwash') {
+    const cat = document.getElementById('formCategory').value;
+    document.getElementById('carwashFields').style.display = cat === 'carwash' ? 'block' : 'none';
+    document.getElementById('storeFields').style.display = cat !== 'carwash' ? 'block' : 'none';
+    if (cat === 'carwash') {
         clearStoreOrder();
         selectedServices = [];
         updateSelectedServicesDisplay();
         updateServiceTotal();
-        populateServiceDropdowns();
-        populateSizeOptions();
-        checkForDetailingServices();
+        calculateCarwashTotal();
     }
+}
 
-    const formModel = document.getElementById('formModel');
-    const formCarwasher = document.getElementById('formCarwasher');
-    const formItem = document.getElementById('formItem');
-    const formQuantity = document.getElementById('formQuantity');
-    const formUnitPrice = document.getElementById('formUnitPrice');
-    
-    if (formModel) formModel.required = (category === 'carwash');
-    if (formCarwasher) formCarwasher.required = (category === 'carwash');
-    if (formItem) formItem.required = (category !== 'carwash');
-    if (formQuantity) formQuantity.required = (category !== 'carwash');
-    if (formUnitPrice) formUnitPrice.required = (category !== 'carwash');
+function addDropdownItem(type) {
+    const prompts = { model: 'Enter new car model', carwasher: 'Enter new carwasher name' };
+    const v = prompt(prompts[type] || 'Enter value');
+    if (!v || !v.trim()) return;
+    const map = { model: 'models', carwasher: 'carwasher' };
+    const key = map[type];
+    if (key && !dropdownData[key].includes(v.trim().toUpperCase())) {
+        dropdownData[key].push(v.trim().toUpperCase());
+        populateAllDropdowns();
+        showNotification(`Added ${v}`, 'success');
+    }
 }
 
 // ============================================================
-// TRANSACTION CRUD
+// STORE ORDER IN TRANSACTION
 // ============================================================
-function openAddModal() {
-    if (!checkPermission('add')) return;
-
-    const title = document.getElementById('modalTitle');
-    if (title) title.textContent = '📝 New Transaction';
-    
-    const editId = document.getElementById('editId');
-    if (editId) editId.value = '';
-    
-    const form = document.getElementById('transactionForm');
-    if (form) form.reset();
-    
-    const submitBtn = document.getElementById('modalSubmitBtn');
-    if (submitBtn) submitBtn.textContent = 'Add Transaction';
-    
-    const category = document.getElementById('formCategory');
-    if (category) category.value = 'carwash';
-    
-    const status = document.getElementById('formPaymentStatus');
-    if (status) status.value = 'unpaid';
-
-    selectedServices = [];
-    isDetailerRequired = false;
-    updateSelectedServicesDisplay();
-    updateServiceTotal();
+function clearStoreOrder() {
     storeOrderItems = [];
     renderStoreOrderItems();
     updateStoreOrderTotal();
+}
+function addCustomStoreItem() {
+    const n = document.getElementById('formStoreItemName');
+    const p = document.getElementById('formStoreItemPrice');
+    const name = n.value.trim();
+    const price = parseFloat(p.value);
+    if (!name || isNaN(price) || price <= 0) { showNotification('Enter item name and price', 'warning'); return; }
+    storeOrderItems.push({ name, price, quantity: 1 });
+    n.value = ''; p.value = '';
+    renderStoreOrderItems();
+    updateStoreOrderTotal();
+    calculateCarwashTotal();
+}
+function addStoreItemToCarwash(name, price) {
+    storeOrderItems.push({ name, price, quantity: 1 });
+    renderStoreOrderItems();
+    updateStoreOrderTotal();
+    calculateCarwashTotal();
+}
+function removeStoreItem(i) {
+    storeOrderItems.splice(i, 1);
+    renderStoreOrderItems();
+    updateStoreOrderTotal();
+    calculateCarwashTotal();
+}
+function renderStoreOrderItems() {
+    const c = document.getElementById('storeItemsContainer');
+    if (!c) return;
+    if (storeOrderItems.length === 0) { c.innerHTML = ''; return; }
+    c.innerHTML = '';
+    storeOrderItems.forEach((item, i) => {
+        const tag = document.createElement('span');
+        tag.className = 'store-item-tag';
+        tag.innerHTML = `<span>${item.name}</span> <span style="color:var(--gray-500);">${formatPrice(item.price)}</span> <span class="remove-btn" onclick="removeStoreItem(${i})">×</span>`;
+        c.appendChild(tag);
+    });
+}
+function updateStoreOrderTotal() {
+    const t = storeOrderItems.reduce((s, x) => s + (x.price * (x.quantity || 1)), 0);
+    const el = document.getElementById('storeOrderTotal');
+    if (el) el.textContent = formatPrice(t);
+}
+function calculateCarwashTotal() {
+    const s = selectedServices.reduce((a, x) => a + x.price, 0);
+    const st = storeOrderItems.reduce((a, x) => a + (x.price * (x.quantity || 1)), 0);
+    const d = document.getElementById('formTotalDisplay');
+    if (d) d.textContent = formatPrice(s + st);
+}
+function calculateStoreTotal() {
+    const qty = parseFloat(document.getElementById('formQuantity').value) || 0;
+    const price = parseFloat(document.getElementById('formUnitPrice').value) || 0;
+    const el = document.getElementById('formStoreTotal');
+    if (el) el.value = (qty * price).toFixed(2);
+}
 
+// ============================================================
+// TRANSACTION MODAL
+// ============================================================
+function openAddModal() {
+    if (!checkPermission('add')) return;
+    document.getElementById('modalTitle').textContent = '📝 New Transaction';
+    document.getElementById('editId').value = '';
+    document.getElementById('transactionForm').reset();
+    document.getElementById('modalSubmitBtn').textContent = 'Save Transaction';
+    document.getElementById('formCategory').value = 'carwash';
+    document.getElementById('formPaymentStatus').value = 'unpaid';
+    selectedServices = [];
+    storeOrderItems = [];
+    updateSelectedServicesDisplay();
+    updateServiceTotal();
+    clearStoreOrder();
     toggleTransactionFields();
     populateAllDropdowns();
     calculateCarwashTotal();
-    checkForDetailingServices();
-    openModal();
+
+    // ✅ Fresh bay picker every time
+    renderBayPicker(null, null);
+
+    document.getElementById('transactionModal').classList.add('active');
 }
 
 function openEditModal(id) {
+    const tx = transactions.find(t => t.id === id);
+    if (!tx) return;
     if (!checkPermission('edit')) return;
-    const row = transactions.find(r => r.id === id);
-    if (!row) {
-        showNotification('Transaction not found', 'error');
-        return;
-    }
-
-    const title = document.getElementById('modalTitle');
-    if (title) title.textContent = '✏️ Edit Transaction';
-    
-    const editId = document.getElementById('editId');
-    if (editId) editId.value = id;
-    
-    const category = document.getElementById('formCategory');
-    if (category) category.value = row.category || 'carwash';
-    
-    toggleTransactionFields();
-    populateAllDropdowns();
-    
-    const payment = document.getElementById('formPayment');
-    if (payment) payment.value = row.payment || 'CASH';
-    
-    const status = document.getElementById('formPaymentStatus');
-    if (status) status.value = row.payment_status || 'unpaid';
-    
-    const remarks = document.getElementById('formRemarks');
-    if (remarks) remarks.value = row.remarks || '';
-
-    selectedServices = [];
-    storeOrderItems = [];
-
-    if (row.category === 'carwash') {
-        const bay = document.getElementById('formBay');
-        if (bay) bay.value = row.bay || '';
-        
-        const model = document.getElementById('formModel');
-        if (model) model.value = row.car_model || '';
-        
-        const plate = document.getElementById('formPlate');
-        if (plate) plate.value = row.plate || '';
-
-        if (row.selected_services && row.selected_services.length > 0) {
-            selectedServices = row.selected_services.map(s => ({ ...s }));
-        } else if (row.services) {
-            const serviceParts = row.services.split(',');
-            serviceParts.forEach(part => {
-                const match = part.trim().match(/^(.+?)\s*\((.+?)\)$/);
-                if (match) {
-                    const priceEntry = servicePrices.find(s =>
-                        s.service_name === match[1].trim() &&
-                        s.size_category === match[2].trim()
-                    );
-                    if (priceEntry) {
-                        selectedServices.push({
-                            service_name: priceEntry.service_name,
-                            size: priceEntry.size_category,
-                            price: priceEntry.price,
-                            category: priceEntry.service_category
-                        });
-                    }
-                }
-            });
-        }
-        updateSelectedServicesDisplay();
-        updateServiceTotal();
-
-        const carwasher = document.getElementById('formCarwasher');
-        if (carwasher) carwasher.value = row.carwasher || '';
-        
-        const detailer = document.getElementById('formDetailer');
-        if (detailer) detailer.value = row.detailer || '';
-
-        if (row.store_order) {
-            storeOrderItems = row.store_order.map(item => ({ ...item }));
-            renderStoreOrderItems();
-            updateStoreOrderTotal();
-        }
-        calculateCarwashTotal();
-        checkForDetailingServices();
-    } else {
-        const item = document.getElementById('formItem');
-        if (item) item.value = row.item || '';
-        
-        const quantity = document.getElementById('formQuantity');
-        if (quantity) quantity.value = row.quantity || 1;
-        
-        const unitPrice = document.getElementById('formUnitPrice');
-        if (unitPrice) unitPrice.value = row.unit_price || 0;
-        
+    document.getElementById('modalTitle').textContent = `✏️ Edit Transaction #${id}`;
+    document.getElementById('editId').value = id;
+    document.getElementById('modalSubmitBtn').textContent = 'Update Transaction';
+    document.getElementById('formCategory').value = tx.category || 'carwash';
+    document.getElementById('formPayment').value = tx.payment || 'CASH';
+    document.getElementById('formPaymentStatus').value = tx.payment_status || 'unpaid';
+    document.getElementById('formRemarks').value = tx.remarks || '';
+    if (tx.category === 'carwash') {
+		renderBayPicker(tx.bay || null, tx.id);
+		document.getElementById('formPlate').value = tx.plate || '';
+		document.getElementById('formModel').value = tx.car_model || '';
+		document.getElementById('formCarwasher').value = tx.carwasher || '';
+		selectedServices = Array.isArray(tx.selected_services) ? tx.selected_services : [];
+		storeOrderItems = Array.isArray(tx.store_order) ? tx.store_order : [];
+		updateSelectedServicesDisplay();
+		updateServiceTotal();
+		renderStoreOrderItems();
+		updateStoreOrderTotal();
+	} else {
+        document.getElementById('formItem').value = tx.item || '';
+        document.getElementById('formQuantity').value = tx.quantity || 1;
+        document.getElementById('formUnitPrice').value = tx.unit_price || 0;
         calculateStoreTotal();
     }
-
-    const submitBtn = document.getElementById('modalSubmitBtn');
-    if (submitBtn) submitBtn.textContent = 'Update Transaction';
-    
-    openModal();
+    toggleTransactionFields();
+    calculateCarwashTotal();
+    document.getElementById('transactionModal').classList.add('active');
 }
 
 async function saveTransaction(e) {
@@ -1346,3078 +1467,2859 @@ async function saveTransaction(e) {
     const remarks = document.getElementById('formRemarks').value.trim();
     const now = new Date().toISOString();
 
-    const serviceInfo = checkForDetailingServices();
-    
     if (category === 'carwash') {
-        const carwasher = document.getElementById('formCarwasher').value.trim();
-        
-        if (!carwasher && selectedServices.length > 0) {
-            showNotification('Please select a Carwasher for this service', 'error');
-            document.getElementById('formCarwasher').focus();
-            return;
-        }
-        
-        if (serviceInfo.hasDetailing) {
-            const detailer = document.getElementById('formDetailer').value.trim();
-            if (!detailer) {
-                showNotification('Detailing services require a Detailer to be selected', 'error');
-                document.getElementById('formDetailer').focus();
-                return;
-            }
-        }
+		const carwasher = document.getElementById('formCarwasher').value.trim();
+		const car_model = document.getElementById('formModel').value.trim();
+		const bayVal = document.getElementById('formBay').value;
+
+		if (!car_model || selectedServices.length === 0) {
+			showNotification('Please fill required fields', 'warning');
+			return;
+		}
+		if (!bayVal) {
+			showNotification('Please select a bay', 'warning');
+			return;
+		}
+		const bayNum = parseInt(bayVal);
+		// ✅ Re-check occupancy at save time (another wash may have started)
+		const occupied = getOccupiedBays(id ? parseInt(id) : null);
+		if (occupied.has(bayNum)) {
+			showNotification(`Bay ${bayNum} is currently occupied by another wash. Please pick a different bay.`, 'error');
+			// Re-render picker to reflect current state and unselect the stale value
+			renderBayPicker(null, id ? parseInt(id) : null);
+			return;
+		}
+		if (!carwasher) {
+			showNotification('Please select a Carwasher', 'warning');
+			return;
+		}
+	} else {
+        const item = document.getElementById('formItem').value.trim();
+        const qty = parseFloat(document.getElementById('formQuantity').value) || 1;
+        const price = parseFloat(document.getElementById('formUnitPrice').value) || 0;
+        if (!item || qty <= 0 || price <= 0) { showNotification('Please fill required fields', 'warning'); return; }
     }
 
-    let transaction = { 
-        category, 
-        payment, 
-        payment_status: paymentStatus, 
-        remarks, 
-        updated_at: now 
-    };
+    let details = { transaction: '', amount: '—', status: paymentStatus.toUpperCase() };
+    if (category === 'carwash') {
+        details.transaction = document.getElementById('formModel').value.trim();
+        details.amount = formatPrice(selectedServices.reduce((a, x) => a + x.price, 0) + storeOrderItems.reduce((a, x) => a + x.price * (x.quantity || 1), 0));
+    } else {
+        details.transaction = document.getElementById('formItem').value.trim();
+        details.amount = formatPrice((parseFloat(document.getElementById('formQuantity').value) || 0) * (parseFloat(document.getElementById('formUnitPrice').value) || 0));
+    }
+    const ok = await showConfirm({
+        icon: id ? '💾' : '✅',
+        title: id ? 'Update Transaction' : 'Save Transaction',
+        message: id ? 'Save changes?' : 'Create this transaction?',
+        details,
+        buttonClass: 'btn-success',
+        buttonText: id ? '<i class="fas fa-save"></i> Update' : '<i class="fas fa-check"></i> Save'
+    });
+    if (!ok) return;
+
+    let transaction = { category, payment, payment_status: paymentStatus, remarks, updated_at: now };
 
     if (category === 'carwash') {
-        const bay = parseInt(document.getElementById('formBay').value) || 0;
+        const bay = parseInt(document.getElementById('formBay').value) || null;
         const car_model = document.getElementById('formModel').value.trim();
         const plate = document.getElementById('formPlate').value.trim();
         const carwasher = document.getElementById('formCarwasher').value.trim();
-        const detailer = document.getElementById('formDetailer').value.trim();
-
-        const serviceTotal = selectedServices.reduce((sum, s) => sum + s.price, 0);
-        const storeTotal = storeOrderItems.reduce((sum, item) => sum + (item.price * (item.quantity || 1)), 0);
-        const total = serviceTotal + storeTotal;
-
-        if (!car_model) {
-            showNotification('Please select a Car Model', 'error');
-            document.getElementById('formModel').focus();
-            return;
-        }
-
-        if (selectedServices.length === 0) {
-            showNotification('Please select at least one service', 'error');
-            document.getElementById('formServices').focus();
-            return;
-        }
-
-        const serviceDisplay = selectedServices.map(s => `${s.service_name} (${s.size})`).join(', ');
-
+        const sTotal = selectedServices.reduce((a, x) => a + x.price, 0);
+        const stTotal = storeOrderItems.reduce((a, x) => a + (x.price * (x.quantity || 1)), 0);
+        const total = sTotal + stTotal;
         transaction = {
             ...transaction,
-            bay: bay || null,
-            car_model: car_model || '',
-            plate: plate || '',
-            services: serviceDisplay || 'CARWASH',
-            other: '',
-            carwasher: carwasher || '',
-            detailer: detailer || '',
-            carwash_price: serviceTotal || 0,
-            detailing_price: 0,
-            total: total || 0,
-            item: `${car_model} - ${serviceDisplay || 'CARWASH'}`,
-            quantity: 1,
-            unit_price: total || 0,
-            store_order: storeOrderItems,
-            selected_services: selectedServices
+            bay, car_model, plate, carwasher,
+            services: selectedServices.map(s => `${s.service_name} (${s.size})`).join(', '),
+            carwash_price: sTotal, detailing_price: 0, total,
+            item: `${car_model} - ${selectedServices[0].service_name}`,
+            quantity: 1, unit_price: total,
+            store_order: storeOrderItems, selected_services: selectedServices,
+            is_ongoing: !id ? true : false,
+            started_at: !id ? now : undefined
         };
     } else {
         const item = document.getElementById('formItem').value.trim();
-        const quantity = parseFloat(document.getElementById('formQuantity').value) || 1;
-        const unit_price = parseFloat(document.getElementById('formUnitPrice').value) || 0;
-        const total = quantity * unit_price;
-
-        if (!item) {
-            showNotification('Please enter an Item name', 'error');
-            document.getElementById('formItem').focus();
-            return;
-        }
-        
-        if (quantity <= 0) {
-            showNotification('Please enter a valid Quantity', 'error');
-            document.getElementById('formQuantity').focus();
-            return;
-        }
-        
-        if (unit_price <= 0) {
-            showNotification('Please enter a valid Unit Price', 'error');
-            document.getElementById('formUnitPrice').focus();
-            return;
-        }
-        
-        transaction = {
-            ...transaction,
-            item,
-            quantity,
-            unit_price,
-            total,
-            car_model: '',
-            services: '',
-            store_order: [],
-            selected_services: []
-        };
+        const qty = parseFloat(document.getElementById('formQuantity').value) || 1;
+        const price = parseFloat(document.getElementById('formUnitPrice').value) || 0;
+        transaction = { ...transaction, item, quantity: qty, unit_price: price, total: qty * price, car_model: '', services: '', store_order: [], selected_services: [] };
     }
 
     try {
-        let savedTransaction = null;
-        
-        if (id) {
-            const index = transactions.findIndex(r => r.id === parseInt(id));
-            if (index !== -1) {
-                const oldTransaction = { ...transactions[index] };
-                transaction.id = parseInt(id);
-                transaction.created_at = transactions[index].created_at;
-                
-                if (supabaseClient && isSupabaseConnected) {
-                    const { data, error } = await supabaseClient
-                        .from(TABLE_NAME)
-                        .update(transaction)
-                        .eq('id', id)
-                        .select();
-                    if (!error && data && data.length > 0) {
-                        savedTransaction = data[0];
-                    } else {
-                        showNotification('Error updating transaction in database', 'error');
-                        return;
-                    }
-                }
-                
-                transactions[index] = savedTransaction || transaction;
-                await logAudit('UPDATE', `Transaction #${id} updated`, {
-                    transaction_id: id,
-                    old_values: { 
-                        total: oldTransaction.total, 
-                        services: oldTransaction.services, 
-                        status: oldTransaction.payment_status 
-                    },
-                    new_values: { 
-                        total: transaction.total, 
-                        services: transaction.services, 
-                        status: transaction.payment_status 
-                    }
-                });
-                showNotification('Transaction updated successfully', 'success');
-            } else {
-                showNotification('Transaction not found', 'error');
-                return;
-            }
-        } else {
-            transaction.created_at = now;
-            
-            if (supabaseClient && isSupabaseConnected) {
-                const { data, error } = await supabaseClient
-                    .from(TABLE_NAME)
-                    .insert(transaction)
-                    .select();
-                if (!error && data && data.length > 0) {
-                    savedTransaction = data[0];
-                    transactions.unshift(savedTransaction);
-                    await logAudit('ADD', `Transaction #${savedTransaction.id} added`, {
-                        transaction_id: savedTransaction.id,
-                        category: savedTransaction.category,
-                        item: savedTransaction.item,
-                        amount: savedTransaction.total
-                    });
-                } else {
-                    showNotification('Error adding transaction to database', 'error');
-                    return;
-                }
-            } else {
-                transaction.id = Date.now();
-                transactions.unshift(transaction);
-                await logAudit('ADD', `Transaction #${transaction.id} added (offline)`, {
-                    transaction_id: transaction.id,
-                    category: transaction.category,
-                    item: transaction.item,
-                    amount: transaction.total
-                });
-            }
-            showNotification('Transaction added successfully', 'success');
-        }
-
-        selectedServices = [];
-        isDetailerRequired = false;
-        updateSelectedServicesDisplay();
-        updateServiceTotal();
-        storeOrderItems = [];
-        renderStoreOrderItems();
-        updateStoreOrderTotal();
-
-        closeModal();
-        populateFilters();
-        applyFilters();
-        renderAll();
-        renderSalaryTable();
-        updateAuditBadge();
-        updateStoreHistory();
-    } catch (err) {
-        console.error('Save error:', err);
-        showNotification('Error saving: ' + err.message, 'error');
-    }
-}
-
-// ============================================================
-// SORTING FUNCTIONS
-// ============================================================
-function sortTable(column) {
-    if (sortColumn === column) {
-        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
-    } else {
-        sortColumn = column;
-        sortDirection = 'asc';
-    }
-    
-    document.querySelectorAll('th.sortable').forEach(th => {
-        th.classList.remove('sorted', 'sorted-asc', 'sorted-desc');
-        const icon = th.querySelector('.sort-icon');
-        if (icon) icon.textContent = '⇅';
-    });
-    
-    const currentTh = document.querySelector(`th[data-sort="${column}"]`);
-    if (currentTh) {
-        currentTh.classList.add('sorted', sortDirection === 'asc' ? 'sorted-asc' : 'sorted-desc');
-        const icon = currentTh.querySelector('.sort-icon');
-        if (icon) icon.textContent = sortDirection === 'asc' ? '▲' : '▼';
-    }
-    
-    applyFilters();
-}
-
-// ============================================================
-// PERMISSION CHECKS
-// ============================================================
-function checkPermission(action) {
-    if (!currentUser) {
-        showNotification('Please login first', 'warning');
-        return false;
-    }
-    const permissionMap = {
-        'add': 'canAddTransaction', 
-        'edit': 'canEditTransaction', 
-        'delete': 'canDeleteTransaction',
-        'view': 'canViewTransactions', 
-        'manage_staff': 'canManageStaff', 
-        'salary': 'canManageSalary',
-        'store': 'canManageStore', 
-        'reports': 'canViewReports', 
-        'export': 'canExport',
-        'change_status': 'canChangeStatus', 
-        'audit': 'canViewAudit', 
-        'prices': 'canManagePrices',
-        'backup': 'canManagePrices', 
-        'restore': 'canManagePrices',
-        'manage_users': 'canManageUsers'
-    };
-    const funcName = permissionMap[action];
-    if (!funcName) return false;
-    const hasPermission = window[funcName] ? window[funcName](currentUser) : false;
-    if (!hasPermission) showNotification(`You don't have permission to ${action}`, 'warning');
-    return hasPermission;
-}
-
-// ============================================================
-// DATA LOADING
-// ============================================================
-function getStaticTransactions() {
-    const months = ['2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11', '2026-12'];
-    const carwashers = ['JM', 'JAYSON', 'DENNIS', 'KURT', 'ADING', 'JUSTINE', 'JOMAR', 'PHILIP', 'RODEL', 'HART'];
-    const models = ['VIOS', 'INNOVA', 'HILUX', 'XPANDER', 'AVANZA', 'MIRAGE', 'MONTERO', 'FORTUNER', 'BRV', 'WIGO'];
-    const services = ['CARWASH', 'HANDWAX', 'MACHINEWAX', 'ACIDRAIN', 'BACKTOZERO', 'ENGINEWASH', 'UNDERWASH', 'QW', 'BTZ'];
-    const statuses = ['paid', 'unpaid', 'partial'];
-    const payments = ['CASH', 'GCASH', 'MARI BANK', 'OTHER BANKS'];
-    const storeItems = ['Marlboro', 'Skyflakes', 'Fudgee Bar', 'Rebisco', 'Lucky Me'];
-    const drinkItems = ['Coca-Cola', 'Water', 'Coffee', 'Cobra', 'Juice'];
-    const palutoItems = ['Canton Noodles', 'Rice Meal', 'Soup', 'Silog Meal', 'Appetizers'];
-    const otherItems = ['Spanish Ice', 'Graham', 'Car Perfume', 'Bamboo'];
-
-    let data = [];
-    let id = 1;
-
-    for (let m = 0; m < months.length; m++) {
-        const month = months[m];
-        const daysInMonth = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0).getDate();
-        const numTransactions = Math.floor(Math.random() * 6) + 3;
-
-        for (let t = 0; t < numTransactions; t++) {
-            const day = Math.floor(Math.random() * daysInMonth) + 1;
-            const dateStr = `${month}-${String(day).padStart(2, '0')}`;
-            const carwasher = carwashers[Math.floor(Math.random() * carwashers.length)];
-            const model = models[Math.floor(Math.random() * models.length)];
-            const service = services[Math.floor(Math.random() * services.length)];
-            const status = statuses[Math.floor(Math.random() * statuses.length)];
-            const payment = payments[Math.floor(Math.random() * payments.length)];
-            const price = Math.floor(Math.random() * 400) + 100;
-            const total = price;
-
-            const category = Math.random() > 0.7 ? ['store', 'drinks', 'paluto', 'other'][Math.floor(Math.random() * 4)] : 'carwash';
-            let item = '', quantity = 1, unitPrice = total;
-
-            if (category === 'carwash') {
-                item = `${model} - ${service}`;
-            } else if (category === 'store') {
-                item = storeItems[Math.floor(Math.random() * storeItems.length)];
-                quantity = Math.floor(Math.random() * 5) + 1;
-                unitPrice = Math.floor(Math.random() * 20) + 5;
-            } else if (category === 'drinks') {
-                item = drinkItems[Math.floor(Math.random() * drinkItems.length)];
-                quantity = Math.floor(Math.random() * 4) + 1;
-                unitPrice = Math.floor(Math.random() * 20) + 10;
-            } else if (category === 'paluto') {
-                item = palutoItems[Math.floor(Math.random() * palutoItems.length)];
-                quantity = Math.floor(Math.random() * 3) + 1;
-                unitPrice = Math.floor(Math.random() * 40) + 20;
-            } else {
-                item = otherItems[Math.floor(Math.random() * otherItems.length)];
-                quantity = 1;
-                unitPrice = Math.floor(Math.random() * 100) + 50;
-            }
-
-            const totalAmount = category === 'carwash' ? total : quantity * unitPrice;
-            data.push({
-                id: id++,
-                category: category,
-                bay: Math.floor(Math.random() * 4) + 1,
-                car_model: category === 'carwash' ? model : '',
-                plate: category === 'carwash' ? `ABC ${Math.floor(Math.random() * 9000) + 1000}` : '',
-                services: category === 'carwash' ? service : '',
-                other: category === 'carwash' ? (Math.random() > 0.5 ? 'ACIDRAIN' : '') : '',
-                carwasher: category === 'carwash' ? carwasher : '',
-                detailer: category === 'carwash' && Math.random() > 0.5 ? carwashers[Math.floor(Math.random() * carwashers.length)] : '',
-                carwash_price: category === 'carwash' ? total : 0,
-                detailing_price: 0,
-                total: totalAmount,
-                payment: payment,
-                payment_status: status,
-                remarks: Math.random() > 0.7 ? 'NIGHT' : '',
-                created_at: new Date(`${dateStr}T${String(Math.floor(Math.random() * 12) + 6).padStart(2, '0')}:${String(Math.floor(Math.random() * 60)).padStart(2, '0')}:00+08:00`).toISOString(),
-                item: item || '',
-                quantity: quantity || 1,
-                unit_price: unitPrice || totalAmount,
-                store_order: [],
-                selected_services: []
-            });
-        }
-    }
-    data.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    return data;
-}
-
-async function loadData() {
-    showLoadingState(true, 'Loading data...');
-    try {
+        let savedTx = null;
         if (supabaseClient && isSupabaseConnected) {
-            const { data, error } = await supabaseClient
-                .from(TABLE_NAME)
-                .select('*')
-                .order('created_at', { ascending: false });
-            if (!error && data && data.length > 0) {
-                transactions = data.map(row => ({ ...row, payment_status: row.payment_status || 'unpaid' }));
-                console.log(`✅ Loaded ${transactions.length} transactions from database`);
-            } else {
-                transactions = getStaticTransactions();
-                console.log(`📄 Using ${transactions.length} static transactions`);
-                if (supabaseClient && isSupabaseConnected && data && data.length === 0) {
-                    seedTransactions();
-                }
-            }
+            const { data, error } = id
+                ? await supabaseClient.from(TABLE_NAME).update(transaction).eq('id', id).select()
+                : await supabaseClient.from(TABLE_NAME).insert(transaction).select();
+            if (error) throw error;
+            if (data && data.length) savedTx = data[0];
         } else {
-            transactions = getStaticTransactions();
-            console.log(`📄 Using ${transactions.length} static transactions (offline mode)`);
+            transaction.id = id ? parseInt(id) : Date.now();
+            transaction.created_at = transaction.created_at || now;
+            savedTx = transaction;
         }
-
-        await loadSummaryData();
-        await loadSalaryData();
-        await loadAuditLogs();
-
-        populateFilters();
-        applyFilters();
-        renderAll();
-        renderSalaryTable();
-        renderAuditLogs();
-        renderStoreTotals();
-        updateStoreHistory();
-        if (isAdmin(currentUser) || isManager(currentUser)) calculateSalaries();
-
-        showLoadingState(false);
-        showNotification(`Loaded ${transactions.length} transactions`, 'success');
-    } catch (err) {
-        console.error('Load error:', err);
-        showErrorState('Failed to load data. Please refresh.');
-        showLoadingState(false);
-    }
-}
-
-async function seedTransactions() {
-    try {
-        const staticData = getStaticTransactions();
-        for (const tx of staticData) {
-            await supabaseClient.from(TABLE_NAME).insert(tx);
+        if (savedTx) {
+            if (id) {
+                const i = transactions.findIndex(t => t.id === parseInt(id));
+                if (i !== -1) transactions[i] = savedTx;
+                showNotification('Transaction updated', 'success');
+            } else {
+                transactions.unshift(savedTx);
+                showNotification(`Transaction #${savedTx.id} saved (${paymentStatus.toUpperCase()})`, 'success', 6000, [
+                    { text: '🖨️ Receipt', onclick: `quickReceipt(${savedTx.id})` }
+                ]);
+            }
+            await logAudit(id ? 'UPDATE' : 'ADD', `Transaction #${savedTx.id}`, { amount: transaction.total });
+            closeModal();
+            applyFilters();
+            renderAll();
+            await loadOngoingTransactions();
+            await loadCompletedTransactions();
+            if (category === 'carwash' && !id) switchTransactionTab('ongoing');
         }
-        console.log('✅ Seeded static transactions to database');
-    } catch (err) {
-        console.warn('Could not seed transactions:', err);
-    }
+    } catch (err) { showNotification('Error: ' + err.message, 'error'); }
 }
 
 // ============================================================
-// RENDER FUNCTIONS
+// ONGOING
+// ============================================================
+async function completeOngoing(id) {
+    if (!checkPermission('edit')) return;
+    const ong = ongoingTransactions.find(t => t.id === id);
+    refreshBayPickerIfOpen();
+	if (!ong) { showNotification('Transaction not found', 'error'); return; }
+
+    if (ong.payment_status !== 'paid') {
+        // Offer to mark as paid & complete in one shot
+        const changeToPaid = await showConfirm({
+            icon: '💳',
+            title: 'Not Fully Paid',
+            message: `This wash is currently ${(ong.payment_status || 'unpaid').toUpperCase()}. Mark it as PAID and complete it now?`,
+            details: {
+                transaction: ong.car_model || '—',
+                amount: formatPrice(ong.total || 0),
+                status: 'PAID'
+            },
+            buttonClass: 'btn-success',
+            buttonText: '<i class="fas fa-check-double"></i> Mark Paid & Complete'
+        });
+        if (changeToPaid) {
+            // First set payment_status = paid, then complete
+            try {
+                const paidUpdate = {
+                    payment_status: 'paid',
+                    amount_paid: ong.total,
+                    payment_note: null,
+                    updated_at: new Date().toISOString()
+                };
+                if (supabaseClient && isSupabaseConnected) {
+                    const { error } = await supabaseClient.from(TABLE_NAME).update(paidUpdate).eq('id', id);
+                    if (error) throw error;
+                }
+                Object.assign(ong, paidUpdate);
+                const main = transactions.find(t => t.id === id);
+                if (main) Object.assign(main, paidUpdate);
+                await logAudit('UPDATE', `Marked PAID before completion #${id}`, { amount: ong.total });
+                await autoCompleteOngoing(id);
+            } catch (err) {
+                showNotification('Failed: ' + err.message, 'error');
+                renderOngoingTable();
+            }
+        }
+        return;
+    }
+
+    const confirmed = await showConfirm({
+        icon: '✅', title: 'Complete Wash',
+        message: 'Mark this wash as completed?',
+        details: { transaction: ong.car_model || '—', amount: formatPrice(ong.total || 0), status: 'PAID' },
+        buttonClass: 'btn-success', buttonText: '<i class="fas fa-check"></i> Complete'
+    });
+    if (!confirmed) return;
+
+    try {
+        const completedAt = new Date().toISOString();
+        const start = new Date(ong.started_at || ong.created_at);
+        const dur = Math.round((new Date(completedAt) - start) / 60000);
+        const upd = { is_ongoing: false, completed_at: completedAt, remarks: `COMPLETED in ${dur} min` };
+        if (supabaseClient && isSupabaseConnected) {
+            await supabaseClient.from(TABLE_NAME).update(upd).eq('id', id);
+        }
+        Object.assign(ong, upd);
+        ongoingTransactions = ongoingTransactions.filter(t => t.id !== id);
+        await logAudit('UPDATE', `Wash completed: ${ong.car_model}`, { duration_minutes: dur });
+        renderOngoingTable();
+        updateOngoingStats();
+        await loadCompletedTransactions();
+        updateTransactionTabCounts();
+        showNotification(`Wash completed in ${dur} min!`, 'success', 6000, [
+            { text: '🖨️ Receipt', onclick: `quickReceipt(${id})` }
+        ]);
+    } catch (err) { showNotification('Error: ' + err.message, 'error'); }
+}
+
+async function changeOngoingPayment(id, newStatus) {
+    if (!canChangeStatus(currentUser)) { renderOngoingTable(); return; }
+    const ong = ongoingTransactions.find(t => t.id === id);
+    if (!ong) return;
+    if (ong.payment_status === newStatus) return;
+
+    let partialData = null;
+
+    if (newStatus === 'partial') {
+        const total = parseFloat(ong.total) || 0;
+        const totalEl = document.getElementById('partialTotalValue');
+        if (totalEl) totalEl.value = total;
+        const prefill = ong.payment_status === 'partial' ? (ong.amount_paid || '') : '';
+        const paidEl = document.getElementById('partialAmountPaid');
+        if (paidEl) paidEl.value = prefill;
+
+        partialData = await promptPartialPayment({
+            total,
+            currentStatus: ong.payment_status,
+            currentPaid: prefill,
+            title: `Partial Payment — ${ong.car_model || 'Wash #' + id}`
+        });
+        if (partialData === null) { renderOngoingTable(); return; }
+    } else {
+        const ok = await showConfirm({
+            icon: '💳',
+            title: 'Change Payment Status',
+            message: newStatus === 'paid'
+                ? `Mark this wash as FULLY PAID? It will be moved to Completed automatically.`
+                : `Update payment status to "${newStatus.toUpperCase()}"?`,
+            details: {
+                transaction: ong.car_model || '—',
+                amount: formatPrice(ong.total || 0),
+                status: newStatus.toUpperCase()
+            },
+            buttonClass: newStatus === 'paid' ? 'btn-success' : 'btn-primary',
+            buttonText: newStatus === 'paid'
+                ? '<i class="fas fa-check-double"></i> Mark Paid & Complete'
+                : '<i class="fas fa-check"></i> Update'
+        });
+        if (!ok) { renderOngoingTable(); return; }
+    }
+
+    try {
+        const update = { payment_status: newStatus, updated_at: new Date().toISOString() };
+        if (newStatus === 'partial' && partialData) {
+            update.amount_paid = partialData.amountPaid;
+            update.payment_note = partialData.note;
+        } else if (newStatus === 'paid') {
+            update.amount_paid = ong.total;
+            update.payment_note = null;
+        } else if (newStatus === 'unpaid') {
+            update.amount_paid = 0;
+            update.payment_note = null;
+        }
+
+        if (supabaseClient && isSupabaseConnected) {
+            const { error } = await supabaseClient.from(TABLE_NAME).update(update).eq('id', id);
+            if (error) throw error;
+        }
+
+        Object.assign(ong, update);
+        const main = transactions.find(t => t.id === id);
+        if (main) Object.assign(main, update);
+
+        await logAudit('UPDATE', `Ongoing payment #${id} → ${newStatus}`,
+            newStatus === 'partial'
+                ? { partial_amount: partialData.amountPaid, note: partialData.note }
+                : { amount: ong.total });
+
+        // ✅ AUTO-COMPLETE: If paid, immediately move to Completed
+        if (newStatus === 'paid') {
+            await autoCompleteOngoing(id);
+            return;
+        }
+
+        renderOngoingTable();
+        renderTable();
+        showNotification(
+            newStatus === 'partial'
+                ? `Marked PARTIAL — ${formatPrice(partialData.amountPaid)} paid`
+                : `Payment updated to ${newStatus.toUpperCase()}`,
+            'success'
+        );
+    } catch (err) {
+        showNotification('Failed: ' + err.message, 'error');
+        renderOngoingTable();
+    }
+}
+
+// ✅ NEW: Silent completion helper — no extra confirmation needed
+// (user already confirmed the "Mark Paid & Complete" prompt)
+async function autoCompleteOngoing(id) {
+    const ong = ongoingTransactions.find(t => t.id === id);
+    if (!ong) return;
+    try {
+        const completedAt = new Date().toISOString();
+        const start = new Date(ong.started_at || ong.created_at);
+        const dur = Math.round((new Date(completedAt) - start) / 60000);
+        const upd = {
+            is_ongoing: false,
+            completed_at: completedAt,
+            remarks: `PAID & COMPLETED in ${dur} min`
+        };
+
+        if (supabaseClient && isSupabaseConnected) {
+            const { error } = await supabaseClient.from(TABLE_NAME).update(upd).eq('id', id);
+            if (error) throw error;
+        }
+
+        Object.assign(ong, upd);
+        const main = transactions.find(t => t.id === id);
+        if (main) Object.assign(main, upd);
+
+        // Remove from ongoing list
+        ongoingTransactions = ongoingTransactions.filter(t => t.id !== id);
+
+        await logAudit('UPDATE', `Wash auto-completed (paid): ${ong.car_model}`, {
+            duration_minutes: dur,
+            auto_completed: true
+        });
+
+        // Refresh both tabs
+        renderOngoingTable();
+        updateOngoingStats();
+        await loadCompletedTransactions();
+        updateTransactionTabCounts();
+        renderTable();
+		
+		refreshBayPickerIfOpen();
+        showNotification(
+            `✅ ${ong.car_model || 'Wash'} is PAID & COMPLETED in ${dur} min`,
+            'success',
+            7000,
+            [
+                { text: '🖨️ Receipt', onclick: `quickReceipt(${id})` },
+                { text: '📋 View Completed', onclick: `switchTransactionTab('completed'); switchPage('transactions');` }
+            ]
+        );
+    } catch (err) {
+        showNotification('Auto-complete failed: ' + err.message, 'error');
+        renderOngoingTable();
+    }
+}
+
+function renderOngoingTable() {
+    const tb = document.getElementById('ongoingBody');
+    if (!tb) return;
+    const rows = getOngoingForView();
+    const dateLabel = document.getElementById('ongoingDateLabel');
+    if (dateLabel) dateLabel.textContent = formatDateKey(ongoingViewDate);
+
+    if (rows.length === 0) {
+        tb.innerHTML = `<tr><td colspan="11" class="empty-state" data-label="">
+            <div style="padding:1rem;">
+                <div style="font-size:1.5rem;margin-bottom:0.5rem;">🚿</div>
+                <div>No ongoing washes ${isToday(ongoingViewDate) ? 'today' : 'for this date'}.</div>
+                <button class="btn btn-sm btn-primary" onclick="openAddModal()" style="margin-top:0.75rem;">
+                    <i class="fas fa-plus"></i> New Transaction
+                </button>
+            </div>
+        </td></tr>`;
+        return;
+    }
+
+    tb.innerHTML = '';
+    rows.forEach((row, i) => {
+        const elapsed = Math.round((new Date() - new Date(row.started_at || row.created_at)) / 60000);
+        const paid = row.payment_status === 'paid';
+        const statusClass = `status-${row.payment_status || 'unpaid'}`;
+        const canComplete = paid && canEditTransaction(currentUser);
+        const canChange = canChangeStatus(currentUser);
+        const balance = getBalanceDue(row);
+        const partialInfo = row.payment_status === 'partial'
+            ? `<div class="partial-info-inline">💰 ${formatPrice(row.amount_paid || 0)} paid · ${formatPrice(balance)} due</div>`
+            : '';
+
+        const tr = document.createElement('tr');
+        tr.className = 'ongoing-row';
+        tr.innerHTML = `
+            <td data-label="#">${i + 1}</td>
+            <td data-label="Bay"><span class="badge badge-info">Bay ${row.bay || '—'}</span></td>
+            <td data-label="Car Model"><strong>${row.car_model || '—'}</strong></td>
+            <td data-label="Plate">${row.plate || '—'}</td>
+            <td data-label="Services">${row.services || '—'}</td>
+            <td data-label="Carwasher">${row.carwasher || '—'}</td>
+            <td data-label="Started">${new Date(row.started_at || row.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</td>
+            <td data-label="Elapsed"><span class="ongoing-timer">⏱️ ${elapsed} min</span></td>
+            <td data-label="Total" class="price-col">${formatPrice(row.total)}</td>
+            <td data-label="Payment">
+                <select class="status-select ${statusClass}" onchange="changeOngoingPayment(${row.id}, this.value)" ${!canChange ? 'disabled' : ''}>
+                    <option value="unpaid" ${row.payment_status === 'unpaid' ? 'selected' : ''}>❌ Unpaid</option>
+                    <option value="partial" ${row.payment_status === 'partial' ? 'selected' : ''}>🔄 Partial</option>
+                    <option value="paid" ${row.payment_status === 'paid' ? 'selected' : ''}>✅ Paid</option>
+                </select>
+                ${partialInfo}
+            </td>
+            <td data-label="">
+                <button class="btn btn-sm ${canComplete ? 'btn-success' : 'btn-outline'}" onclick="completeOngoing(${row.id})"
+						title="${canComplete ? 'Mark as completed' : 'Mark paid & complete in one click'}">
+					<i class="fas ${canComplete ? 'fa-check' : 'fa-check-double'}"></i>
+					${canComplete ? 'Complete' : 'Pay & Complete'}
+				</button>
+            </td>
+        `;
+        tb.appendChild(tr);
+    });
+    enhanceTablesForMobile();
+}
+
+function updateOngoingStats() {
+    const rows = getOngoingForView();
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('ongoingInProgress', rows.length);
+    set('ongoingRevenue', formatPrice(rows.reduce((s, t) => s + (parseFloat(t.total) || 0), 0)));
+    set('baysAvailable', Math.max(0, 4 - rows.length));
+    if (rows.length > 0) {
+        const avg = Math.round(rows.reduce((s, t) => s + Math.round((new Date() - new Date(t.started_at || t.created_at)) / 60000), 0) / rows.length);
+        set('ongoingAvgTime', avg + ' min');
+    } else set('ongoingAvgTime', '0 min');
+}
+
+function setOngoingViewDate(dateKey) {
+    ongoingViewDate = dateKey || getTodayKey();
+    renderOngoingTable();
+    updateOngoingStats();
+}
+
+function onOngoingDateChange(value) {
+    setOngoingViewDate(value);
+}
+
+function jumpToToday(view) {
+    if (view === 'ongoing') {
+        const input = document.getElementById('ongoingDateFilter');
+        if (input) input.value = getTodayKey();
+        setOngoingViewDate(getTodayKey());
+    } else {
+        const input = document.getElementById('completedDateFilter');
+        if (input) input.value = getTodayKey();
+        setCompletedViewDate(getTodayKey());
+    }
+}
+
+function refreshOngoing() {
+    loadOngoingTransactions().then(() => {
+        renderOngoingTable();
+        updateOngoingStats();
+        showNotification('Refreshed', 'info');
+    });
+}
+
+// ============================================================
+// COMPLETED
+// ============================================================
+function renderCompletedTable() {
+    const tb = document.getElementById('completedBody');
+    if (!tb) return;
+
+    const rows = filteredCompleted.filter(t => {
+        const d = t.completed_at || t.created_at;
+        return toLocalDateKey(d) === completedViewDate;
+    });
+
+    const dateLabel = document.getElementById('completedDateLabel');
+    if (dateLabel) dateLabel.textContent = formatDateKey(completedViewDate);
+
+    if (rows.length === 0) {
+        tb.innerHTML = `<tr><td colspan="10" class="empty-state" data-label="">
+            <div style="padding:1rem;">
+                <div style="font-size:1.5rem;margin-bottom:0.5rem;">📋</div>
+                <div>No completed washes ${isToday(completedViewDate) ? 'today' : 'for this date'}.</div>
+            </div>
+        </td></tr>`;
+        return;
+    }
+
+    tb.innerHTML = '';
+    rows.slice(0, 100).forEach((row, i) => {
+        let dur = '—';
+        if (row.started_at && row.completed_at) {
+            dur = Math.round((new Date(row.completed_at) - new Date(row.started_at)) / 60000) + ' min';
+        }
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td data-label="#">${i + 1}</td>
+            <td data-label="Time">${new Date(row.completed_at || row.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</td>
+            <td data-label="Car Model"><strong>${row.car_model || '—'}</strong></td>
+            <td data-label="Plate">${row.plate || '—'}</td>
+            <td data-label="Services">${row.services || '—'}</td>
+            <td data-label="Carwasher">${row.carwasher || '—'}</td>
+            <td data-label="Duration"><span class="badge badge-success">${dur}</span></td>
+            <td data-label="Total" class="price-col">${formatPrice(row.total)}</td>
+            <td data-label="Status"><span class="badge badge-${row.payment_status}">${(row.payment_status || '').toUpperCase()}</span></td>
+            <td data-label="">
+                <button class="btn btn-sm btn-info" onclick="quickReceipt(${row.id})"><i class="fas fa-receipt"></i></button>
+                <button class="btn btn-sm btn-outline" onclick="openEditModal(${row.id})"><i class="fas fa-edit"></i></button>
+                <button class="btn btn-sm btn-danger" onclick="deleteTransaction(${row.id})"><i class="fas fa-trash"></i></button>
+            </td>
+        `;
+        tb.appendChild(tr);
+    });
+    enhanceTablesForMobile();
+}
+
+function updateCompletedStats() {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const rows = filteredCompleted.filter(t => {
+        const d = t.completed_at || t.created_at;
+        return toLocalDateKey(d) === completedViewDate;
+    });
+    set('completedTotal', rows.length);
+    set('completedRevenue', formatPrice(rows.reduce((s, t) => s + (parseFloat(t.total) || 0), 0)));
+    set('completedToday', rows.length);
+    const durs = rows.filter(t => t.started_at && t.completed_at)
+        .map(t => (new Date(t.completed_at) - new Date(t.started_at)) / 60000);
+    set('completedAvgDuration', (durs.length ? Math.round(durs.reduce((a, b) => a + b, 0) / durs.length) : 0) + ' min');
+}
+
+function setCompletedViewDate(dateKey) {
+    completedViewDate = dateKey || getTodayKey();
+    renderCompletedTable();
+    updateCompletedStats();
+}
+
+function onCompletedDateChange(value) {
+    setCompletedViewDate(value);
+}
+
+function filterCompleted() {
+    const q = (document.getElementById('completedSearch')?.value || '').toLowerCase();
+    const st = document.getElementById('completedStatusFilter')?.value || '';
+    filteredCompleted = completedTransactions.filter(t => {
+        if (st && t.payment_status !== st) return false;
+        if (q && ![t.car_model, t.plate, t.carwasher].join(' ').toLowerCase().includes(q)) return false;
+        return true;
+    });
+    const c = document.getElementById('completedFilterCount');
+    if (c) c.textContent = `${filteredCompleted.length} total`;
+    renderCompletedTable();
+    updateCompletedStats();
+}
+
+// ============================================================
+// MAIN TABLE
 // ============================================================
 function renderAll() {
-    renderSummaryCards();
-    renderStoreInputs();
-    renderRecentTransactions();
-    if (filteredTransactions.length === 0 && transactions.length > 0) filteredTransactions = [...transactions];
+    renderSummary();
+    renderRecent();
     renderTable();
     updateBadgeCount();
-    renderStoreTotals();
-    updateStoreHistory();
-}
-
-function sortData(data) {
-    return [...data].sort((a, b) => {
-        let valA, valB;
-        
-        switch(sortColumn) {
-            case 'id':
-                valA = a.id || 0;
-                valB = b.id || 0;
-                break;
-            case 'date':
-                valA = new Date(a.created_at || 0);
-                valB = new Date(b.created_at || 0);
-                break;
-            case 'category':
-                valA = (a.category || '').toLowerCase();
-                valB = (b.category || '').toLowerCase();
-                break;
-            case 'item':
-                valA = (a.item || a.car_model || '').toLowerCase();
-                valB = (b.item || b.car_model || '').toLowerCase();
-                break;
-            case 'carwasher':
-                valA = (a.carwasher || '').toLowerCase();
-                valB = (b.carwasher || '').toLowerCase();
-                break;
-            case 'detailer':
-                valA = (a.detailer || '').toLowerCase();
-                valB = (b.detailer || '').toLowerCase();
-                break;
-            case 'total':
-                valA = parseFloat(a.total) || 0;
-                valB = parseFloat(b.total) || 0;
-                break;
-            case 'payment':
-                valA = (a.payment || '').toLowerCase();
-                valB = (b.payment || '').toLowerCase();
-                break;
-            case 'status':
-                valA = (a.payment_status || '').toLowerCase();
-                valB = (b.payment_status || '').toLowerCase();
-                break;
-            default:
-                valA = a.id || 0;
-                valB = b.id || 0;
-        }
-        
-        if (valA < valB) return sortDirection === 'asc' ? -1 : 1;
-        if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
-        return 0;
-    });
 }
 
 function renderTable() {
-    const tbody = document.getElementById('transactionsBody');
-    const footer = document.getElementById('transactionsFooter');
+    const tb = document.getElementById('transactionsBody');
     const table = document.getElementById('transactionsTable');
-    const loading = document.getElementById('loadingState');
-    
+    if (!tb || !table) return;
     let data = filteredTransactions.length > 0 ? filteredTransactions : transactions;
-    data = sortData(data);
-
-    if (!data || data.length === 0) {
-        if (table) table.style.display = 'none';
-        if (loading) {
-            loading.style.display = 'block';
-            loading.innerHTML = `<div class="empty-state"><i class="fas fa-inbox" style="font-size:2rem;color:#94a3b8;margin-bottom:1rem;display:block;"></i><h3 style="color:#64748b;">No Transactions Found</h3></div>`;
-        }
-        return;
-    }
-
-    if (table) table.style.display = '';
-    if (loading) loading.style.display = 'none';
-    if (tbody) tbody.innerHTML = '';
-
-    const canEdit = checkPermission('edit');
-    const canDelete = checkPermission('delete');
-    const canChangeStatus = checkPermission('change_status');
-
-    data.forEach((row, idx) => {
-        const isSelected = selectedIds.has(row.id);
-        const categoryClass = `badge-${row.category || 'other'}`;
-        const paymentClass = getPaymentClass(row.payment);
-        const statusClass = `badge-${row.payment_status || 'unpaid'}`;
-        const total = parseFloat(row.total) || 0;
-        const categoryEmoji = { carwash: '🚘', store: '🏪', drinks: '🥤', paluto: '🍜', other: '💰' };
-        let displayName = row.category === 'carwash' ? `${row.car_model || ''} - ${row.services || ''}` : row.item || '';
-        const statusOptions = ['paid', 'unpaid', 'partial'].map(s => `<option value="${s}" ${row.payment_status === s ? 'selected' : ''}>${s.toUpperCase()}</option>`).join('');
-
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td><input type="checkbox" class="row-checkbox" data-id="${row.id}" ${isSelected ? 'checked' : ''} onchange="toggleRow(${row.id})" ${!canDelete ? 'disabled' : ''}></td>
-            <td>${row.id || idx + 1}</td>
-            <td>${row.created_at ? new Date(row.created_at).toLocaleDateString() : '—'}</td>
-            <td><span class="badge ${categoryClass}">${categoryEmoji[row.category] || '📋'} ${(row.category || 'other').toUpperCase()}</span></td>
-            <td>${displayName}</td>
-            <td>${row.carwasher || '—'}</td>
-            <td>${row.detailer || '—'}</td>
-            <td class="price-col">${formatPrice(total)}</td>
-            <td><span class="badge ${paymentClass}">${row.payment || '—'}</span></td>
-            <td>${canChangeStatus ? `<select class="status-select status-${row.payment_status || 'unpaid'}" onchange="updatePaymentStatus(${row.id}, this.value)">${statusOptions}</select>` : `<span class="badge ${statusClass}">${(row.payment_status || 'unpaid').toUpperCase()}</span>`}</td>
-            <td><div class="row-actions">${canEdit ? `<button class="btn btn-sm btn-primary" onclick="openEditModal(${row.id})"><i class="fas fa-edit"></i></button>` : ''}${canDelete ? `<button class="btn btn-sm btn-danger" onclick="deleteTransaction(${row.id})"><i class="fas fa-trash"></i></button>` : '<span style="font-size:0.7rem;color:#94a3b8;">View</span>'}</div></td>
-        `;
-        if (tbody) tbody.appendChild(tr);
-    });
-
-    const totalAll = data.reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    if (footer) {
-        footer.innerHTML = `<tr class="total-row"><td colspan="7" style="text-align:right;font-weight:700;">TOTAL</td><td class="price-col" style="font-size:1.1rem;">${formatPrice(totalAll)}</td><td colspan="3"></td></tr>`;
-    }
-}
-
-function renderSummaryCards() {
-    if (!currentUser || isStaff(currentUser)) {
-        const cards = document.getElementById('summaryCards');
-        if (cards) cards.style.display = 'none';
-        return;
-    }
-
-    const totalCarwash = transactions.filter(t => t.category === 'carwash').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    const totalStore = transactions.filter(t => t.category === 'store').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    const totalDrinks = transactions.filter(t => t.category === 'drinks').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    const totalPaluto = transactions.filter(t => t.category === 'paluto').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    const totalOther = transactions.filter(t => t.category === 'other').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    const totalIncome = transactions.reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-
-    const carCount = document.getElementById('carCount');
-    if (carCount) carCount.textContent = transactions.filter(t => t.category === 'carwash').length;
-    
-    const carwashTotal = document.getElementById('carwashTotal');
-    if (carwashTotal) carwashTotal.textContent = formatPrice(totalCarwash);
-    
-    const storeTotal = document.getElementById('storeTotal');
-    if (storeTotal) storeTotal.textContent = formatPrice(totalStore);
-    
-    const drinksTotal = document.getElementById('drinksTotal');
-    if (drinksTotal) drinksTotal.textContent = formatPrice(totalDrinks);
-    
-    const palutoTotal = document.getElementById('palutoTotal');
-    if (palutoTotal) palutoTotal.textContent = formatPrice(totalPaluto);
-    
-    const otherTotal = document.getElementById('otherTotal');
-    if (otherTotal) otherTotal.textContent = formatPrice(totalOther);
-    
-    const incomeTotal = document.getElementById('incomeTotal');
-    if (incomeTotal) incomeTotal.textContent = formatPrice(totalIncome);
-
-    const today = new Date().toDateString();
-    const todayEarnings = transactions.filter(t => new Date(t.created_at).toDateString() === today).reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    
-    const todayEarningsEl = document.getElementById('todayEarnings');
-    if (todayEarningsEl) todayEarningsEl.textContent = formatPrice(todayEarnings);
-    
-    const pendingPaymentsEl = document.getElementById('pendingPayments');
-    if (pendingPaymentsEl) pendingPaymentsEl.textContent = transactions.filter(t => t.payment_status === 'unpaid').length;
-    
-    const unpaidAmountEl = document.getElementById('unpaidAmount');
-    if (unpaidAmountEl) unpaidAmountEl.textContent = formatPrice(transactions.filter(t => t.payment_status === 'unpaid').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0));
-    
-    const totalTransactionsEl = document.getElementById('totalTransactions');
-    if (totalTransactionsEl) totalTransactionsEl.textContent = transactions.length;
-}
-
-function renderRecentTransactions() {
-    const tbody = document.getElementById('recentBody');
-    if (!tbody) return;
-
-    const recent = transactions.slice(0, 5);
-    if (recent.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No recent transactions</td></tr>';
-        return;
-    }
-
-    tbody.innerHTML = '';
-    recent.forEach((row, idx) => {
-        const tr = document.createElement('tr');
-        const categoryEmoji = { carwash: '🚘', store: '🏪', drinks: '🥤', paluto: '🍜', other: '💰' };
-        const statusClass = `badge-${row.payment_status || 'unpaid'}`;
-        tr.innerHTML = `
-            <td>${idx + 1}</td>
-            <td>${row.created_at ? new Date(row.created_at).toLocaleDateString() : '—'}</td>
-            <td>${categoryEmoji[row.category] || '📋'} ${(row.category || 'other').toUpperCase()}</td>
-            <td>${row.category === 'carwash' ? `${row.car_model} - ${row.services}` : row.item}</td>
-            <td class="price-col">${formatPrice(parseFloat(row.total) || 0)}</td>
-            <td><span class="badge ${statusClass}">${(row.payment_status || 'unpaid').toUpperCase()}</span></td>
-        `;
-        tbody.appendChild(tr);
-    });
-}
-
-function renderStoreInputs() {
-    const idMap = {
-        cigarettes: 'cigInput', snacks: 'snacksInput',
-        drinksWater: 'drinksWaterInput', drinksSoda: 'drinksSodaInput',
-        drinksCoffee: 'drinksCoffeeInput', drinksJuice: 'drinksJuiceInput', drinksEnergy: 'drinksEnergyInput',
-        palutoNoodles: 'palutoNoodlesInput', palutoRice: 'palutoRiceInput',
-        palutoSoup: 'palutoSoupInput', palutoSilog: 'palutoSilogInput', palutoAppetizer: 'palutoAppetizerInput',
-        otherSales: 'otherSalesInput', gcashCw: 'gcashCwInput', gcashFoods: 'gcashFoodsInput', expenses: 'expensesInput'
-    };
-    Object.keys(idMap).forEach(f => {
-        const el = document.getElementById(idMap[f]);
-        if (el) {
-            el.value = storeData[f] || 0;
-            const statusEl = document.getElementById(f + 'Status');
-            if (statusEl) statusEl.textContent = '';
-        }
-    });
-}
-
-function renderAuditLogs() {
-    const tbody = document.getElementById('auditBody');
-    const footer = document.getElementById('auditFooter');
-    if (!tbody) return;
-
-    const data = filteredAuditLogs.length > 0 ? filteredAuditLogs : auditLogs;
-    if (!data || data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No audit logs available.</td></tr>';
-        if (footer) footer.innerHTML = '';
-        return;
-    }
-
-    tbody.innerHTML = '';
-    data.slice(0, 200).forEach((log, idx) => {
-        const actionClass = getAuditActionClass(log.action);
-        const actionEmoji = getAuditActionEmoji(log.action);
-        const actionLabel = getAuditActionLabel(log.action);
-        const hasDetails = log.details && Object.keys(log.details).length > 0;
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${idx + 1}</td>
-            <td>${log.created_at ? new Date(log.created_at).toLocaleString() : '—'}</td>
-            <td><span class="badge ${actionClass}">${actionEmoji} ${actionLabel}</span></td>
-            <td><strong>${log.user_name || log.username || 'Unknown'}</strong><br><span style="font-size:0.65rem;color:#94a3b8;">${log.user_role || ''}</span></td>
-            <td>${log.description || ''}</td>
-            <td>${hasDetails ? `<button class="btn btn-sm btn-primary" onclick="viewAuditDetails(${idx})"><i class="fas fa-eye"></i> View</button>` : '<span style="font-size:0.75rem;color:#94a3b8;">No details</span>'}</td>
-        `;
-        tbody.appendChild(tr);
-    });
-    
-    const auditCount = document.getElementById('auditCount');
-    if (auditCount) auditCount.textContent = `Showing ${Math.min(data.length, 200)} of ${auditLogs.length} entries`;
-    
-    if (footer) {
-        footer.innerHTML = `<tr class="total-row"><td colspan="6" style="text-align:right;font-weight:700;">Total: ${auditLogs.length} entries</td></tr>`;
-    }
-}
-
-function viewAuditDetails(index) {
-    const data = filteredAuditLogs.length > 0 ? filteredAuditLogs : auditLogs;
-    const log = data[index];
-    if (!log) {
-        showNotification('Audit log not found', 'error');
-        return;
-    }
-
-    const modal = document.getElementById('auditDetailModal');
-    const content = document.getElementById('auditDetailContent');
-    if (!modal || !content) return;
-
-    const actionClass = getAuditActionClass(log.action);
-    const actionEmoji = getAuditActionEmoji(log.action);
-    const actionLabel = getAuditActionLabel(log.action);
-    const details = log.details || {};
-
-    let html = `
-        <div class="audit-detail-container">
-            <div class="audit-detail-grid">
-                <span class="label">Action:</span>
-                <span class="value"><span class="badge ${actionClass}" style="font-size:0.85rem; padding:0.3rem 0.8rem;">${actionEmoji} ${actionLabel}</span></span>
-                
-                <span class="label">User:</span>
-                <span class="value"><strong>${log.user_name || log.username || 'Unknown'}</strong> ${log.user_role ? `(${log.user_role})` : ''}</span>
-                
-                <span class="label">Date & Time:</span>
-                <span class="value">${log.created_at ? new Date(log.created_at).toLocaleString() : '—'}</span>
-                
-                <span class="label">Description:</span>
-                <span class="value">${log.description || '—'}</span>
-            </div>
-    `;
-
-    if (details && Object.keys(details).length > 0) {
-        if (log.action === 'SALARY_UPDATE' && details.carwashers !== undefined) {
-            html += `
-                <div style="margin-bottom:1rem;">
-                    <h4 style="font-size:1rem; color:var(--gray-700); margin-bottom:0.5rem;">💵 Salary Summary</h4>
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; background:var(--gray-50); padding:1rem; border-radius:8px; border:1px solid var(--gray-200);">
-                        <div><span style="color:var(--gray-500);">Total Carwashers:</span> <strong>${details.carwashers}</strong></div>
-                        <div><span style="color:var(--gray-500);">Total Salary:</span> <strong style="color:var(--primary);">${formatPrice(details.total_salary)}</strong></div>
-                        ${details.carwasher ? `<div><span style="color:var(--gray-500);">Carwasher:</span> <strong>${details.carwasher}</strong></div>` : ''}
-                        ${details.old_rate !== undefined ? `<div><span style="color:var(--gray-500);">Old Rate:</span> <strong>${(details.old_rate * 100).toFixed(0)}%</strong></div>` : ''}
-                        ${details.new_rate !== undefined ? `<div><span style="color:var(--gray-500);">New Rate:</span> <strong>${(details.new_rate * 100).toFixed(0)}%</strong></div>` : ''}
-                        ${details.old_status ? `<div><span style="color:var(--gray-500);">Old Status:</span> <strong>${details.old_status}</strong></div>` : ''}
-                        ${details.new_status ? `<div><span style="color:var(--gray-500);">New Status:</span> <strong>${details.new_status}</strong></div>` : ''}
-                    </div>
-                </div>
-            `;
-        }
-        else if (log.action === 'PRICE_UPDATE' && details.changes && details.changes.length > 0) {
-            html += `
-                <div style="margin-bottom:1rem;">
-                    <h4 style="font-size:1rem; color:var(--gray-700); margin-bottom:0.5rem;">💰 Price Changes (${details.changes.length})</h4>
-                    <div style="background:var(--gray-50); padding:0.75rem; border-radius:8px; border:1px solid var(--gray-200); max-height:300px; overflow-y:auto;">
-                        ${details.changes.map(c => `
-                            <div style="display:flex; justify-content:space-between; padding:0.4rem 0; border-bottom:1px solid var(--gray-200);">
-                                <span><strong>${c.service}</strong></span>
-                                <span>
-                                    <span style="color:var(--danger); text-decoration:line-through;">${formatPrice(c.old_price)}</span>
-                                    <span style="color:var(--gray-400);"> → </span>
-                                    <span style="color:var(--success); font-weight:700;">${formatPrice(c.new_price)}</span>
-                                </span>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
-            `;
-        }
-        else if (log.action === 'STORE_UPDATE' && details.field) {
-            html += `
-                <div style="margin-bottom:1rem;">
-                    <h4 style="font-size:1rem; color:var(--gray-700); margin-bottom:0.5rem;">🏪 Store Update</h4>
-                    <div style="display:grid; grid-template-columns:auto 1fr; gap:0.5rem 1rem; background:var(--gray-50); padding:1rem; border-radius:8px; border:1px solid var(--gray-200);">
-                        <span style="font-weight:600; color:var(--gray-600);">Field:</span>
-                        <span>${details.field}</span>
-                        <span style="font-weight:600; color:var(--gray-600);">Old Value:</span>
-                        <span style="color:var(--danger);">${formatPrice(details.old_value)}</span>
-                        <span style="font-weight:600; color:var(--gray-600);">New Value:</span>
-                        <span style="color:var(--success); font-weight:700;">${formatPrice(details.new_value)}</span>
-                    </div>
-                </div>
-            `;
-        }
-        else if (log.action === 'STATUS_UPDATE' && details.old_status && details.new_status) {
-            html += `
-                <div style="margin-bottom:1rem;">
-                    <h4 style="font-size:1rem; color:var(--gray-700); margin-bottom:0.5rem;">🔄 Status Change</h4>
-                    <div style="display:grid; grid-template-columns:auto 1fr; gap:0.5rem 1rem; background:var(--gray-50); padding:1rem; border-radius:8px; border:1px solid var(--gray-200);">
-                        <span style="font-weight:600; color:var(--gray-600);">Transaction:</span>
-                        <span>#${details.transaction_id} - ${details.transaction || 'Unknown'}</span>
-                        <span style="font-weight:600; color:var(--gray-600);">Old Status:</span>
-                        <span style="color:${details.old_status === 'paid' ? 'var(--success)' : details.old_status === 'partial' ? 'var(--warning)' : 'var(--danger)'}; font-weight:600;">${details.old_status.toUpperCase()}</span>
-                        <span style="font-weight:600; color:var(--gray-600);">New Status:</span>
-                        <span style="color:${details.new_status === 'paid' ? 'var(--success)' : details.new_status === 'partial' ? 'var(--warning)' : 'var(--danger)'}; font-weight:700;">${details.new_status.toUpperCase()}</span>
-                        ${details.amount ? `<span style="font-weight:600; color:var(--gray-600);">Amount:</span><span>${formatPrice(details.amount)}</span>` : ''}
-                    </div>
-                </div>
-            `;
-        }
-        else if (log.action === 'BACKUP' || log.action === 'RESTORE') {
-            html += `
-                <div style="margin-bottom:1rem;">
-                    <h4 style="font-size:1rem; color:var(--gray-700); margin-bottom:0.5rem;">${log.action === 'BACKUP' ? '💾' : '📂'} ${log.action === 'BACKUP' ? 'Backup' : 'Restore'} Details</h4>
-                    <div style="display:grid; grid-template-columns:auto 1fr; gap:0.5rem 1rem; background:var(--gray-50); padding:1rem; border-radius:8px; border:1px solid var(--gray-200);">
-                        ${details.filename ? `<span style="font-weight:600; color:var(--gray-600);">File:</span><span>${details.filename}</span>` : ''}
-                        ${details.record_count !== undefined ? `<span style="font-weight:600; color:var(--gray-600);">Records:</span><span>${details.record_count}</span>` : ''}
-                        ${details.type ? `<span style="font-weight:600; color:var(--gray-600);">Type:</span><span>${details.type}</span>` : ''}
-                        ${details.restored_records ? `
-                            <span style="font-weight:600; color:var(--gray-600);">Restored:</span>
-                            <span>Transactions: ${details.restored_records.transactions || 0}, Salaries: ${details.restored_records.salaries || 0}, Prices: ${details.restored_records.service_prices || 0}</span>
-                        ` : ''}
-                    </div>
-                </div>
-            `;
-        }
-        else {
-            html += `
-                <div style="margin-bottom:1rem;">
-                    <h4 style="font-size:1rem; color:var(--gray-700); margin-bottom:0.5rem;">📋 Details</h4>
-                    <div style="background:var(--gray-50); padding:1rem; border-radius:8px; border:1px solid var(--gray-200); max-height:300px; overflow-y:auto;">
-                        <pre style="font-family:'Courier New',monospace; font-size:0.85rem; white-space:pre-wrap; word-break:break-word; margin:0; color:var(--gray-800);">${JSON.stringify(details, null, 2)}</pre>
-                    </div>
-                </div>
-            `;
-        }
-    }
-
-    if ((log.action === 'UPDATE' || log.action === 'PRICE_UPDATE' || log.action === 'SALARY_UPDATE' || log.action === 'STATUS_UPDATE') && 
-        details.old_values && details.new_values) {
-        html += `
-            <div style="margin-bottom:1rem;">
-                <h4 style="font-size:1rem; color:var(--gray-700); margin-bottom:0.5rem;">🔄 Changes Comparison</h4>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
-                    <div style="background:var(--danger-light); padding:0.75rem; border-radius:8px; border:1px solid var(--danger);">
-                        <div style="font-weight:600; color:var(--danger); margin-bottom:0.25rem;">Before</div>
-                        <pre style="font-family:'Courier New',monospace; font-size:0.8rem; white-space:pre-wrap; word-break:break-word; margin:0; color:var(--gray-700);">${JSON.stringify(details.old_values, null, 2)}</pre>
-                    </div>
-                    <div style="background:var(--success-light); padding:0.75rem; border-radius:8px; border:1px solid var(--success);">
-                        <div style="font-weight:600; color:var(--success); margin-bottom:0.25rem;">After</div>
-                        <pre style="font-family:'Courier New',monospace; font-size:0.8rem; white-space:pre-wrap; word-break:break-word; margin:0; color:var(--gray-700);">${JSON.stringify(details.new_values, null, 2)}</pre>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
-    html += '</div>';
-    content.innerHTML = html;
-    modal.classList.add('active');
-}
-
-function closeAuditDetail() {
-    const modal = document.getElementById('auditDetailModal');
-    if (modal) modal.classList.remove('active');
-}
-
-function filterAudit() {
-    const search = document.getElementById('auditSearch')?.value.toLowerCase() || '';
-    const action = document.getElementById('auditActionFilter')?.value || '';
-    filteredAuditLogs = auditLogs.filter(log => {
-        const matchSearch = !search || 
-            (log.description || '').toLowerCase().includes(search) || 
-            (log.user_name || '').toLowerCase().includes(search) ||
-            (log.username || '').toLowerCase().includes(search);
-        const matchAction = !action || log.action === action;
-        return matchSearch && matchAction;
-    });
-    renderAuditLogs();
-}
-
-function refreshAudit() {
-    showNotification('Refreshing audit...', 'info');
-    loadAuditLogs().then(() => {
-        filteredAuditLogs = [];
-        const search = document.getElementById('auditSearch');
-        if (search) search.value = '';
-        const action = document.getElementById('auditActionFilter');
-        if (action) action.value = '';
-        renderAuditLogs();
-        updateAuditBadge();
-        showNotification('Audit refreshed successfully', 'success');
-    });
-}
-
-function exportAuditLogs() {
-    if (!checkPermission('audit')) return;
-    if (auditLogs.length === 0) {
-        showNotification('No audit logs to export', 'warning');
-        return;
-    }
-    try {
-        const wb = XLSX.utils.book_new();
-        const excelData = auditLogs.slice(0, 500).map(log => ({
-            'Date & Time': log.created_at ? new Date(log.created_at).toLocaleString() : '',
-            'Action': log.action || '',
-            'User': log.user_name || log.username || '',
-            'Role': log.user_role || '',
-            'Description': log.description || '',
-            'Details': log.details ? JSON.stringify(log.details) : ''
-        }));
-        
-        const ws = XLSX.utils.json_to_sheet(excelData);
-        ws['!cols'] = [
-            { wch: 20 }, { wch: 15 }, { wch: 20 }, { wch: 12 }, { wch: 40 }, { wch: 50 }
-        ];
-        XLSX.utils.book_append_sheet(wb, ws, 'Audit Logs');
-        
-        const filename = `Audit_Logs_${new Date().toISOString().split('T')[0]}.xlsx`;
-        XLSX.writeFile(wb, filename);
-        
-        showNotification(`✅ Audit logs exported successfully!`, 'success');
-    } catch (err) {
-        console.error('Export audit error:', err);
-        showNotification('Error exporting audit logs: ' + err.message, 'error');
-    }
-}
-
-// ============================================================
-// SALARY FUNCTIONS
-// ============================================================
-function calculateSalaries() {
-    if (!checkPermission('salary')) return;
-
-    const carwashers = [...new Set(transactions.filter(t => t.category === 'carwash' && t.carwasher).map(t => t.carwasher).filter(Boolean))];
-    if (carwashers.length === 0) {
-        showNotification('No carwasher data found', 'warning');
-        return;
-    }
-
-    const earnings = {};
-    const counts = {};
-    carwashers.forEach(cw => {
-        const filtered = transactions.filter(t => t.category === 'carwash' && t.carwasher === cw);
-        earnings[cw] = filtered.reduce((sum, t) => sum + (parseFloat(t.total) || 0), 0);
-        counts[cw] = filtered.length;
-    });
-
-    const oldSalaryData = [...salaryData];
-    salaryData = carwashers.map(cw => {
-        const existing = oldSalaryData.find(s => s.name === cw);
-        const rate = existing ? existing.rate : 0.30;
-        return {
-            name: cw,
-            cars_washed: counts[cw] || 0,
-            total_earnings: earnings[cw] || 0,
-            rate: rate,
-            salary: (earnings[cw] || 0) * rate,
-            status: existing ? existing.status : 'pending'
-        };
-    });
-    renderSalaryTable();
-    showNotification('Salaries calculated successfully', 'success');
-    logAudit('SALARY_UPDATE', 'Salaries calculated', { 
-        carwashers: carwashers.length, 
-        total_salary: salaryData.reduce((sum, s) => sum + s.salary, 0)
-    });
-}
-
-function renderSalaryTable() {
-    const tbody = document.getElementById('salaryBody');
-    const footer = document.getElementById('salaryFooter');
-    if (!tbody) return;
-
-    if (isStaff(currentUser)) {
-        const table = document.getElementById('salaryTable');
-        const summary = document.getElementById('salarySummary');
-        if (table) table.style.display = 'none';
-        if (summary) summary.style.display = 'none';
-        return;
-    }
-
-    if (!salaryData || salaryData.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No salary data. Click "Calculate".</td></tr>';
-        if (footer) footer.innerHTML = '';
-        return;
-    }
-
-    tbody.innerHTML = '';
-    let totalSalary = 0, totalCars = 0, paidCount = 0, pendingCount = 0;
-    const canEdit = checkPermission('salary');
-
-    salaryData.forEach((row, idx) => {
-        const statusClass = row.status === 'paid' ? 'badge-paid' : 'badge-pending';
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${idx + 1}</td>
-            <td><strong>${row.name}</strong></td>
-            <td>${row.cars_washed || 0}</td>
-            <td class="price-col">${formatPrice(row.total_earnings || 0)}</td>
-            <td>${canEdit ? `<input type="number" class="salary-rate-input" value="${(row.rate * 100).toFixed(0)}" min="0" max="100" step="5" onchange="updateSalaryRate(${idx}, this.value)"><span style="font-size:0.7rem;color:#64748b;">%</span>` : `${(row.rate * 100).toFixed(0)}%`}</td>
-            <td class="price-col salary-total">${formatPrice(row.salary || 0)}</td>
-            <td><span class="badge ${statusClass}">${(row.status || 'pending').toUpperCase()}</span></td>
-            <td>${canEdit ? `<button class="btn btn-sm ${row.status === 'paid' ? 'btn-warning' : 'btn-success'}" onclick="toggleSalaryStatus(${idx})">${row.status === 'paid' ? '↩️' : '✅'}</button>` : '<span style="font-size:0.7rem;color:#94a3b8;">View</span>'}</td>
-        `;
-        tbody.appendChild(tr);
-        totalSalary += row.salary || 0;
-        totalCars += row.cars_washed || 0;
-        if (row.status === 'paid') paidCount++; else pendingCount++;
-    });
-
-    const totalCarwashersEl = document.getElementById('totalCarwashers');
-    if (totalCarwashersEl) totalCarwashersEl.textContent = salaryData.length;
-    
-    const totalCarsWashedEl = document.getElementById('totalCarsWashed');
-    if (totalCarsWashedEl) totalCarsWashedEl.textContent = totalCars;
-    
-    const totalSalaryAmountEl = document.getElementById('totalSalaryAmount');
-    if (totalSalaryAmountEl) totalSalaryAmountEl.textContent = formatPrice(totalSalary);
-    
-    const salaryPaidCountEl = document.getElementById('salaryPaidCount');
-    if (salaryPaidCountEl) salaryPaidCountEl.textContent = paidCount;
-    
-    const salaryPendingCountEl = document.getElementById('salaryPendingCount');
-    if (salaryPendingCountEl) salaryPendingCountEl.textContent = pendingCount;
-
-    if (footer) {
-        footer.innerHTML = `<tr class="total-row"><td colspan="5" style="text-align:right;font-weight:700;">TOTAL</td><td class="price-col" style="font-size:1.1rem;color:var(--primary);">${formatPrice(totalSalary)}</td><td colspan="2"></td></tr>`;
-    }
-}
-
-function updateSalaryRate(index, value) {
-    if (!checkPermission('salary')) return;
-    const rate = parseFloat(value) / 100;
-    if (isNaN(rate) || rate < 0) return;
-    const oldRate = salaryData[index].rate;
-    const oldSalary = salaryData[index].salary;
-    salaryData[index].rate = rate;
-    salaryData[index].salary = (salaryData[index].total_earnings || 0) * rate;
-    renderSalaryTable();
-    logAudit('SALARY_UPDATE', `Updated rate for ${salaryData[index].name}`, {
-        carwasher: salaryData[index].name,
-        old_rate: oldRate,
-        new_rate: rate,
-        old_salary: oldSalary,
-        new_salary: salaryData[index].salary
-    });
-    showNotification(`Rate updated for ${salaryData[index].name}`, 'success');
-}
-
-function toggleSalaryStatus(index) {
-    if (!checkPermission('salary')) return;
-    const oldStatus = salaryData[index].status;
-    salaryData[index].status = salaryData[index].status === 'paid' ? 'pending' : 'paid';
-    renderSalaryTable();
-    logAudit('SALARY_UPDATE', `Changed status for ${salaryData[index].name}`, {
-        carwasher: salaryData[index].name,
-        old_status: oldStatus,
-        new_status: salaryData[index].status
-    });
-    showNotification(`Status changed to ${salaryData[index].status.toUpperCase()} for ${salaryData[index].name}`, 'success');
-}
-
-async function saveSalaries() {
-    if (!checkPermission('salary')) return;
-    if (!supabaseClient || !isSupabaseConnected) {
-        showNotification('Supabase not connected. Please check your connection.', 'warning');
-        return;
-    }
-    try {
-        await supabaseClient.from(SALARY_TABLE).delete().neq('id', 0);
-        for (const row of salaryData) {
-            await supabaseClient.from(SALARY_TABLE).insert({
-                name: row.name,
-                cars_washed: row.cars_washed || 0,
-                total_earnings: row.total_earnings || 0,
-                rate: row.rate || 0.30,
-                salary: row.salary || 0,
-                status: row.status || 'pending'
-            });
-        }
-        showNotification('Salaries saved successfully', 'success');
-        logAudit('SALARY_UPDATE', 'Salaries saved to database', { 
-            count: salaryData.length,
-            total_salary: salaryData.reduce((sum, s) => sum + s.salary, 0)
+    if (sortColumn && sortDirection) {
+        data = [...data].sort((a, b) => {
+            let av = a[sortColumn], bv = b[sortColumn];
+            if (sortColumn === 'id' || sortColumn === 'total') { av = parseFloat(av) || 0; bv = parseFloat(bv) || 0; }
+            else { av = String(av || '').toLowerCase(); bv = String(bv || '').toLowerCase(); }
+            if (av < bv) return sortDirection === 'asc' ? -1 : 1;
+            if (av > bv) return sortDirection === 'asc' ? 1 : -1;
+            return 0;
         });
-    } catch (err) {
-        console.error('Save salaries error:', err);
-        showNotification('Error saving salaries', 'error');
     }
+    if (data.length === 0) { table.style.display = 'none'; return; }
+    table.style.display = '';
+    tb.innerHTML = '';
+    data.slice(0, 100).forEach(row => {
+        const rowStatusClass = `status-${row.payment_status}`;
+        const balance = getBalanceDue(row);
+        const partialInfo = row.payment_status === 'partial'
+            ? `<div class="partial-info-inline">💰 ${formatPrice(row.amount_paid || 0)} paid · ${formatPrice(balance)} due</div>`
+            : '';
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td data-label=""><input type="checkbox" onchange="toggleRow(${row.id})" ${selectedIds.has(row.id) ? 'checked' : ''}></td>
+            <td data-label="#">${row.id}</td>
+            <td data-label="Date">${new Date(row.created_at || row.updated_at).toLocaleDateString()}</td>
+            <td data-label="Category"><span class="badge badge-${row.category}">${(row.category || '').toUpperCase()}</span></td>
+            <td data-label="Item">${row.item || row.car_model || '—'}</td>
+            <td data-label="Carwasher">${row.carwasher || '—'}</td>
+            <td data-label="Total" class="price-col">${formatPrice(row.total)}</td>
+            <td data-label="Status">
+                <select class="status-select ${rowStatusClass}" onchange="changePaymentStatus(${row.id}, this.value)" ${!canChangeStatus(currentUser) ? 'disabled' : ''}>
+                    <option value="unpaid" ${row.payment_status === 'unpaid' ? 'selected' : ''}>Unpaid</option>
+                    <option value="partial" ${row.payment_status === 'partial' ? 'selected' : ''}>Partial</option>
+                    <option value="paid" ${row.payment_status === 'paid' ? 'selected' : ''}>Paid</option>
+                </select>
+                ${partialInfo}
+            </td>
+            <td data-label="">
+                <div class="row-actions">
+                    <button class="btn btn-sm btn-info" onclick="quickReceipt(${row.id})" title="Receipt"><i class="fas fa-receipt"></i></button>
+                    <button class="btn btn-sm btn-outline" onclick="openEditModal(${row.id})" title="Edit"><i class="fas fa-edit"></i></button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteTransaction(${row.id})" title="Delete"><i class="fas fa-trash"></i></button>
+                </div>
+            </td>
+        `;
+        tb.appendChild(tr);
+    });
+    const footer = document.getElementById('transactionsFooter');
+    if (footer) {
+        const total = data.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+        footer.innerHTML = `<tr class="total-row"><td colspan="5" data-label="">TOTAL (${data.length})</td><td data-label="">${formatPrice(total)}</td><td colspan="2" data-label=""></td></tr>`;
+    }
+    enhanceTablesForMobile();
+}
+
+function renderSummary() {
+    if (isStaff(currentUser)) {
+        const s = document.getElementById('summaryCards');
+        if (s) s.style.display = 'none';
+        return;
+    }
+
+    const t = transactions;
+    const total = t.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+
+    const carCount = t.filter(x => x.category === 'carwash').length;
+    const carwashTotal = t.filter(x => x.category === 'carwash').reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+    const storeTotal = t.filter(x => x.category === 'store').reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+    const accessoriesTotal = t.filter(x => x.category === 'accessories').reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+    const drinksTotal = t.filter(x => x.category === 'drinks').reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+    const palutoTotal = t.filter(x => x.category === 'paluto').reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+
+    // Animated values
+    animateMoney(document.getElementById('incomeTotal'), total);
+    animateCount(document.getElementById('carCount'), carCount);
+    animateMoney(document.getElementById('carwashTotal'), carwashTotal);
+    animateMoney(document.getElementById('storeTotal'), storeTotal);
+    animateMoney(document.getElementById('drinksTotal'), drinksTotal);
+    animateMoney(document.getElementById('palutoTotal'), palutoTotal);
+    animateMoney(document.getElementById('accessoriesTotal'), accessoriesTotal);
+
+    // Small stats elsewhere (not animated — already cheap)
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('pendingPayments', t.filter(x => x.payment_status === 'unpaid').length);
+    const today = new Date().toDateString();
+    set('todayEarnings', formatPrice(t.filter(x => new Date(x.created_at).toDateString() === today).reduce((s, r) => s + (parseFloat(r.total) || 0), 0)));
+}
+function renderRecent() {
+    const tb = document.getElementById('recentBody');
+    if (!tb) return;
+    const recent = [...transactions].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 10);
+    if (recent.length === 0) { tb.innerHTML = '<tr><td colspan="6" class="empty-state" data-label="">No transactions yet</td></tr>'; return; }
+    tb.innerHTML = '';
+    recent.forEach((row, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td data-label="#">${i + 1}</td>
+            <td data-label="Date">${new Date(row.created_at).toLocaleDateString()}</td>
+            <td data-label="Category"><span class="badge badge-${row.category}">${(row.category || '').toUpperCase()}</span></td>
+            <td data-label="Item">${row.item || row.car_model || '—'}</td>
+            <td data-label="Total" class="price-col">${formatPrice(row.total)}</td>
+            <td data-label="Status"><span class="badge badge-${row.payment_status}">${(row.payment_status || '').toUpperCase()}</span></td>
+        `;
+        tb.appendChild(tr);
+    });
+    enhanceTablesForMobile();
+}
+
+function updateBadgeCount() {
+    const el = document.getElementById('txBadge');
+    if (el) el.textContent = transactions.length;
 }
 
 // ============================================================
 // FILTERS
 // ============================================================
-function populateFilters() {
-    const carwashers = [...new Set(transactions.map(t => t.carwasher).filter(Boolean))];
-    const carwasherSelect = document.getElementById('carwasherFilter');
-    if (carwasherSelect) {
-        carwasherSelect.innerHTML = '<option value="">All Carwashers</option>';
-        carwashers.forEach(c => { carwasherSelect.innerHTML += `<option value="${c}">${c}</option>`; });
-    }
-    
-    const detailers = [...new Set(transactions.map(t => t.detailer).filter(Boolean))];
-    const detailerSelect = document.getElementById('detailerFilter');
-    if (detailerSelect) {
-        detailerSelect.innerHTML = '<option value="">All Detailers</option>';
-        detailers.forEach(d => { detailerSelect.innerHTML += `<option value="${d}">${d}</option>`; });
-    }
-}
-
 function applyFilters() {
-    const search = document.getElementById('searchInput')?.value.toLowerCase() || '';
-    const category = document.getElementById('categoryFilter')?.value || '';
-    const payment = document.getElementById('paymentFilter')?.value || '';
+    const q = (document.getElementById('searchInput')?.value || '').toLowerCase();
+    const cat = document.getElementById('categoryFilter')?.value || '';
     const status = document.getElementById('paymentStatusFilter')?.value || '';
-    const carwasher = document.getElementById('carwasherFilter')?.value || '';
-    const detailer = document.getElementById('detailerFilter')?.value || '';
-
     filteredTransactions = transactions.filter(t => {
-        const searchable = `${t.car_model || ''} ${t.item || ''} ${t.services || ''} ${t.plate || ''} ${t.remarks || ''} ${t.carwasher || ''} ${t.detailer || ''}`.toLowerCase();
-        return (!search || searchable.includes(search)) &&
-               (!category || t.category === category) &&
-               (!payment || t.payment === payment) &&
-               (!status || t.payment_status === status) &&
-               (!carwasher || t.carwasher === carwasher) &&
-               (!detailer || t.detailer === detailer);
+        if (cat && t.category !== cat) return false;
+        if (status && t.payment_status !== status) return false;
+        if (q) {
+            const hay = [t.item, t.car_model, t.plate, t.carwasher, t.category, t.services, String(t.id)].join(' ').toLowerCase();
+            if (!hay.includes(q)) return false;
+        }
+        return true;
     });
-
-    const filterCount = document.getElementById('filterCount');
-    if (filterCount) filterCount.textContent = `Showing ${filteredTransactions.length} of ${transactions.length}`;
+    const c = document.getElementById('filterCount');
+    if (c) c.textContent = `${filteredTransactions.length} of ${transactions.length}`;
     renderTable();
 }
 
 function clearFilters() {
-    const search = document.getElementById('searchInput');
-    if (search) search.value = '';
-    
-    const category = document.getElementById('categoryFilter');
-    if (category) category.value = '';
-    
-    const payment = document.getElementById('paymentFilter');
-    if (payment) payment.value = '';
-    
-    const status = document.getElementById('paymentStatusFilter');
-    if (status) status.value = '';
-    
-    const carwasher = document.getElementById('carwasherFilter');
-    if (carwasher) carwasher.value = '';
-    
-    const detailer = document.getElementById('detailerFilter');
-    if (detailer) detailer.value = '';
-    
+    ['searchInput', 'categoryFilter', 'paymentStatusFilter'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
     applyFilters();
-    showNotification('Filters cleared', 'info');
 }
 
-function updateBadgeCount() {
-    const badge = document.getElementById('txBadge');
-    if (badge) badge.textContent = transactions.length;
+function sortTable(col) {
+    if (sortColumn === col) sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+    else { sortColumn = col; sortDirection = 'asc'; }
+    document.querySelectorAll('th.sortable').forEach(th => th.classList.remove('sorted-asc', 'sorted-desc'));
+    const th = document.querySelector(`th.sortable[data-sort="${col}"]`);
+    if (th) th.classList.add(`sorted-${sortDirection}`);
+    renderTable();
+}
+
+function toggleAllCheckboxes() {
+    const m = document.getElementById('selectAll');
+    if (!m) return;
+    if (m.checked) transactions.forEach(t => selectedIds.add(t.id));
+    else selectedIds.clear();
+    renderTable();
+}
+
+function toggleRow(id) {
+    if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
 }
 
 // ============================================================
-// STORE VALUE UPDATE - DATABASE SYNC
+// DELETE / STATUS
 // ============================================================
-async function updateStoreValue(field, value) {
-    if (!checkPermission('store')) return;
-    
-    const numValue = parseFloat(value) || 0;
-    const oldValue = storeData[field] || 0;
-    const fieldName = field.replace(/([A-Z])/g, ' $1').trim();
-    
-    storeData[field] = numValue;
-    
-    const statusEl = document.getElementById(field + 'Status');
-    if (statusEl) {
-        statusEl.textContent = '⏳';
-        statusEl.style.color = 'var(--warning)';
-    }
-    
+async function deleteTransaction(id) {
+    if (!checkPermission('delete')) return;
+    const tx = transactions.find(t => t.id === id);
+    if (!tx) return;
+    const ok = await showConfirm({
+        icon: '🗑️', title: 'Delete Transaction',
+        message: 'Delete this transaction? Cannot be undone.',
+        details: { transaction: tx.item || tx.car_model || '—', amount: formatPrice(tx.total), status: (tx.payment_status || '').toUpperCase() },
+        buttonClass: 'btn-danger', buttonText: '<i class="fas fa-trash"></i> Delete'
+    });
+    if (!ok) return;
     try {
-        if (supabaseClient && isSupabaseConnected) {
-            await saveSummaryData();
-            console.log(`✅ Store value saved: ${field} = ${numValue}`);
-        }
-        
-        if (statusEl) {
-            statusEl.textContent = '✅';
-            statusEl.style.color = 'var(--success)';
-            setTimeout(() => {
-                statusEl.textContent = '';
-            }, 2000);
-        }
-        
-        await logAudit('STORE_UPDATE', `Updated store value: ${fieldName}`, {
-            field: field,
-            old_value: oldValue,
-            new_value: numValue
+        if (supabaseClient && isSupabaseConnected) await supabaseClient.from(TABLE_NAME).delete().eq('id', id);
+        transactions = transactions.filter(t => t.id !== id);
+        ongoingTransactions = ongoingTransactions.filter(t => t.id !== id);
+        completedTransactions = completedTransactions.filter(t => t.id !== id);
+        selectedIds.delete(id);
+        await logAudit('DELETE', `Deleted #${id}`, { amount: tx.total });
+        applyFilters();
+        renderAll();
+        renderOngoingTable();
+        renderCompletedTable();
+        updateTransactionTabCounts();
+		refreshBayPickerIfOpen();
+        showNotification('Deleted', 'success');
+    } catch (err) { showNotification('Delete failed: ' + err.message, 'error'); }
+}
+
+async function deleteSelected() {
+    if (!checkPermission('delete')) return;
+    if (selectedIds.size === 0) { showNotification('Nothing selected', 'warning'); return; }
+    const ok = await showConfirm({
+        icon: '🗑️', title: 'Delete Selected',
+        message: `Delete ${selectedIds.size} transactions? Cannot be undone.`,
+        details: { transaction: `${selectedIds.size} items`, amount: '—', status: '—' },
+        buttonClass: 'btn-danger', buttonText: 'Delete All'
+    });
+    if (!ok) return;
+    const ids = Array.from(selectedIds);
+    for (const id of ids) {
+        try {
+            if (supabaseClient && isSupabaseConnected) await supabaseClient.from(TABLE_NAME).delete().eq('id', id);
+            transactions = transactions.filter(t => t.id !== id);
+            ongoingTransactions = ongoingTransactions.filter(t => t.id !== id);
+            completedTransactions = completedTransactions.filter(t => t.id !== id);
+        } catch (e) { console.warn(e); }
+    }
+    selectedIds.clear();
+    await logAudit('DELETE', `Deleted ${ids.length}`, { count: ids.length });
+    applyFilters();
+    renderAll();
+    renderOngoingTable();
+    renderCompletedTable();
+    updateTransactionTabCounts();
+	refreshBayPickerIfOpen();
+    showNotification(`Deleted ${ids.length}`, 'success');
+}
+
+async function changePaymentStatus(id, status) {
+    if (!canChangeStatus(currentUser)) return;
+    const tx = transactions.find(t => t.id === id);
+    if (!tx) return;
+
+    let partialData = null;
+
+    if (status === 'partial') {
+        const total = parseFloat(tx.total) || 0;
+        const totalEl = document.getElementById('partialTotalValue');
+        if (totalEl) totalEl.value = total;
+        const prefill = tx.payment_status === 'partial' ? (tx.amount_paid || '') : '';
+        const paidEl = document.getElementById('partialAmountPaid');
+        if (paidEl) paidEl.value = prefill;
+
+        partialData = await promptPartialPayment({
+            total,
+            currentStatus: tx.payment_status,
+            currentPaid: prefill,
+            title: `Partial Payment — ${tx.car_model || tx.item || 'Transaction #' + id}`
         });
-        
-        renderStoreTotals();
-        renderSummaryCards();
-        updateStoreHistory();
-        
-        showNotification(`${fieldName} updated to ${formatPrice(numValue)}`, 'success');
-        
-    } catch (err) {
-        console.error('Store update error:', err);
-        if (statusEl) {
-            statusEl.textContent = '❌';
-            statusEl.style.color = 'var(--danger)';
-            setTimeout(() => {
-                statusEl.textContent = '';
-            }, 3000);
-        }
-        showNotification('Error saving store value: ' + err.message, 'error');
+        if (partialData === null) { renderTable(); return; }
+    } else {
+        const ok = await showConfirm({
+            icon: '💳',
+            title: 'Change Payment Status',
+            message: `Update payment status to "${status.toUpperCase()}"?`,
+            details: { transaction: tx.item || tx.car_model || '—', amount: formatPrice(tx.total), status: status.toUpperCase() },
+            buttonClass: 'btn-primary',
+            buttonText: '<i class="fas fa-check"></i> Update'
+        });
+        if (!ok) { renderTable(); return; }
     }
-}
 
-async function addStoreTransaction(category, itemName, amount) {
-    if (!checkPermission('add')) return;
-    
-    const now = new Date().toISOString();
-    const transaction = {
-        category: category,
-        item: itemName,
-        total: Math.abs(amount),
-        quantity: 1,
-        unit_price: Math.abs(amount),
-        payment: 'CASH',
-        payment_status: 'paid',
-        remarks: amount < 0 ? 'EXPENSE' : 'STORE SALE',
-        created_at: now,
-        updated_at: now,
-        store_order: [],
-        selected_services: []
-    };
-    
     try {
-        let savedTx = null;
-        
+        const update = { payment_status: status, updated_at: new Date().toISOString() };
+        if (status === 'partial' && partialData) {
+            update.amount_paid = partialData.amountPaid;
+            update.payment_note = partialData.note;
+        } else if (status === 'paid') {
+            update.amount_paid = tx.total;
+            update.payment_note = null;
+        } else if (status === 'unpaid') {
+            update.amount_paid = 0;
+            update.payment_note = null;
+        }
+
         if (supabaseClient && isSupabaseConnected) {
-            const { data, error } = await supabaseClient
-                .from(TABLE_NAME)
-                .insert(transaction)
-                .select();
-            if (!error && data && data.length > 0) {
-                savedTx = data[0];
-            } else {
-                showNotification('Error saving transaction to database', 'error');
-                return;
-            }
-        } else {
-            transaction.id = Date.now();
-            savedTx = transaction;
+            const { error } = await supabaseClient.from(TABLE_NAME).update(update).eq('id', id);
+            if (error) throw error;
         }
-        
-        if (savedTx) {
-            transactions.unshift(savedTx);
-            await logAudit('ADD', `Store transaction: ${itemName}`, {
-                item: itemName,
-                amount: amount,
-                category: category,
-                type: amount < 0 ? 'Expense' : 'Sale'
-            });
-            
-            if (amount > 0) {
-                const fieldMap = {
-                    'store': { 'Cigarettes': 'cigarettes', 'Snacks': 'snacks' },
-                    'drinks': { 'Water': 'drinksWater', 'Soft Drinks': 'drinksSoda', 'Coffee': 'drinksCoffee', 'Juice': 'drinksJuice', 'Energy Drinks': 'drinksEnergy' },
-                    'paluto': { 'Noodles': 'palutoNoodles', 'Rice Meal': 'palutoRice', 'Soup': 'palutoSoup', 'Silog Meal': 'palutoSilog', 'Appetizers': 'palutoAppetizer' },
-                    'other': { 'Other Sale': 'otherSales', 'Expense': 'expenses' }
-                };
-                
-                const field = fieldMap[category]?.[itemName];
-                if (field && amount > 0) {
-                    const currentValue = storeData[field] || 0;
-                    storeData[field] = currentValue + amount;
-                    renderStoreInputs();
-                    renderStoreTotals();
-                    if (supabaseClient && isSupabaseConnected) {
-                        await saveSummaryData();
-                    }
-                }
-            }
-            
-            populateFilters();
-            applyFilters();
-            renderAll();
-            updateStoreHistory();
-            showNotification(`✅ ${itemName} ${amount < 0 ? 'expense' : 'sale'} recorded: ${formatPrice(amount)}`, 'success');
+
+        Object.assign(tx, update);
+
+        const auditDetail = { amount: tx.total };
+        if (status === 'partial' && partialData) {
+            auditDetail.partial_amount = partialData.amountPaid;
+            auditDetail.note = partialData.note;
         }
+        await logAudit('UPDATE', `Payment status #${id} → ${status}`, auditDetail);
+
+        renderTable();
+        renderOngoingTable();
+        showNotification(
+            status === 'partial'
+                ? `Marked PARTIAL — ${formatPrice(partialData.amountPaid)} paid`
+                : `Status updated to ${status.toUpperCase()}`,
+            'success'
+        );
     } catch (err) {
-        console.error('Add store transaction error:', err);
-        showNotification('Error adding store transaction: ' + err.message, 'error');
+        showNotification('Failed: ' + err.message, 'error');
+        renderTable();
     }
 }
 
-function renderStoreTotals() {
-    const storeTotal = (storeData.cigarettes || 0) + (storeData.snacks || 0);
-    document.getElementById('storeItemsTotal').textContent = formatPrice(storeTotal);
-    document.getElementById('storeCatTotal').textContent = formatPrice(storeTotal);
-    
-    const drinksTotal = (storeData.drinksWater || 0) + (storeData.drinksSoda || 0) + 
-                       (storeData.drinksCoffee || 0) + (storeData.drinksJuice || 0) + 
-                       (storeData.drinksEnergy || 0);
-    document.getElementById('drinksTotalDisplay').textContent = formatPrice(drinksTotal);
-    document.getElementById('drinksCatTotal').textContent = formatPrice(drinksTotal);
-    
-    const palutoTotal = (storeData.palutoNoodles || 0) + (storeData.palutoRice || 0) + 
-                       (storeData.palutoSoup || 0) + (storeData.palutoSilog || 0) + 
-                       (storeData.palutoAppetizer || 0);
-    document.getElementById('palutoTotalDisplay').textContent = formatPrice(palutoTotal);
-    document.getElementById('palutoCatTotal').textContent = formatPrice(palutoTotal);
-    
-    const otherTotal = (storeData.otherSales || 0) + (storeData.gcashCw || 0) + 
-                      (storeData.gcashFoods || 0);
-    const netOther = otherTotal - (storeData.expenses || 0);
-    document.getElementById('otherTotalDisplay').textContent = formatPrice(netOther);
-    document.getElementById('otherCatTotal').textContent = formatPrice(netOther);
-    
-    const totalStoreSales = storeTotal + drinksTotal + palutoTotal + otherTotal;
-    document.getElementById('totalStoreSales').textContent = formatPrice(totalStoreSales);
-    document.getElementById('totalDrinksSummary').textContent = formatPrice(drinksTotal);
-    document.getElementById('totalPalutoSummary').textContent = formatPrice(palutoTotal);
-    document.getElementById('totalOtherSummary').textContent = formatPrice(netOther);
+// ============================================================
+// RECEIPT
+// ============================================================
+function quickReceipt(id) {
+    const tx = transactions.find(t => t.id === id);
+    if (!tx) { showNotification('Not found', 'error'); return; }
+    const sv = Array.isArray(tx.selected_services) ? tx.selected_services : [];
+    const st = Array.isArray(tx.store_order) ? tx.store_order : [];
+    const svHTML = sv.length > 0
+        ? sv.map(s => `<div style="display:flex;justify-content:space-between;font-size:0.8rem;padding:2px 0;"><span>${s.service_name} (${s.size})</span><span>${formatPrice(s.price)}</span></div>`).join('')
+        : (tx.services ? `<div style="font-size:0.8rem;">${tx.services}</div>` : '');
+    const stHTML = st.length > 0
+        ? st.map(s => `<div style="display:flex;justify-content:space-between;font-size:0.8rem;padding:2px 0;"><span>${s.name}</span><span>${formatPrice(s.price)}</span></div>`).join('')
+        : '';
+
+    const isPartial = tx.payment_status === 'partial';
+    const partialHTML = isPartial ? `
+        <div style="font-size:0.75rem;margin-top:0.4rem;padding:0.4rem;background:#fef3d7;border-radius:6px;border-left:3px solid #f59e0b;">
+            <div style="font-weight:700;color:#92400e;">PARTIAL PAYMENT</div>
+            <div style="display:flex;justify-content:space-between;"><span>Amount Paid:</span><span>${formatPrice(tx.amount_paid || 0)}</span></div>
+            <div style="display:flex;justify-content:space-between;"><span>Balance Due:</span><span>${formatPrice(getBalanceDue(tx))}</span></div>
+            ${tx.payment_note ? `<div style="margin-top:0.25rem;font-style:italic;">Note: ${tx.payment_note}</div>` : ''}
+        </div>
+    ` : '';
+
+    const html = `
+        <div id="receiptDocument">
+            <div style="text-align:center;margin-bottom:0.5rem;">
+                <div style="font-size:1.3rem;">🧼</div>
+                <div style="font-weight:700;">MINI BOSS CARWASH</div>
+                <div style="font-size:0.7rem;">Receipt #${tx.id}</div>
+                <div style="font-size:0.7rem;">${new Date(tx.created_at || Date.now()).toLocaleString()}</div>
+            </div>
+            <hr style="border:none;border-top:1px dashed #999;">
+            <div style="font-size:0.8rem;margin:0.5rem 0;">
+                <div>Category: ${(tx.category || '').toUpperCase()}</div>
+                ${tx.car_model ? `<div>Car: ${tx.car_model} ${tx.plate ? '(' + tx.plate + ')' : ''}</div>` : ''}
+                ${tx.carwasher ? `<div>Carwasher: ${tx.carwasher}</div>` : ''}
+                ${tx.item && !tx.car_model ? `<div>Item: ${tx.item}</div>` : ''}
+            </div>
+            <hr style="border:none;border-top:1px dashed #999;">
+            ${svHTML}${stHTML}
+            <hr style="border:none;border-top:1px dashed #999;">
+            <div style="display:flex;justify-content:space-between;font-weight:700;font-size:0.95rem;padding:4px 0;"><span>TOTAL</span><span>${formatPrice(tx.total)}</span></div>
+            <div style="font-size:0.75rem;margin-top:0.3rem;">Payment: ${tx.payment || '—'}</div>
+            <div style="font-size:0.75rem;">Status: ${(tx.payment_status || '').toUpperCase()}</div>
+            ${partialHTML}
+            <hr style="border:none;border-top:1px dashed #999;">
+            <div style="text-align:center;font-size:0.7rem;margin-top:0.5rem;">Thank you! Come again!</div>
+        </div>
+    `;
+    document.getElementById('receiptContent').innerHTML = html;
+    document.getElementById('receiptModal').classList.add('active');
 }
 
-function updateStoreHistory() {
-    const tbody = document.getElementById('storeHistoryBody');
-    if (!tbody) return;
-    
-    const storeTxs = transactions
-        .filter(t => ['store', 'drinks', 'paluto', 'other'].includes(t.category))
-        .slice(0, 20);
-    
-    document.getElementById('storeTxCount').textContent = storeTxs.length;
-    
-    if (storeTxs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No store transactions</td></tr>';
-        return;
-    }
-    
-    tbody.innerHTML = '';
-    storeTxs.forEach((row, idx) => {
-        const tr = document.createElement('tr');
-        const isExpense = row.remarks === 'EXPENSE' || row.amount < 0;
-        const statusClass = row.payment_status === 'paid' ? 'badge-success' : 'badge-warning';
-        const amount = parseFloat(row.total) || 0;
-        
-        tr.innerHTML = `
-            <td>${idx + 1}</td>
-            <td>${row.created_at ? new Date(row.created_at).toLocaleDateString() : '—'}</td>
-            <td>${row.item || row.category}</td>
-            <td class="price-col" style="color:${isExpense ? 'var(--danger)' : 'var(--success)'}">
-                ${isExpense ? '-' : ''}${formatPrice(amount)}
-            </td>
-            <td><span class="badge badge-${row.category}">${row.category.toUpperCase()}</span></td>
-            <td><span class="badge ${statusClass}">${(row.payment_status || 'unpaid').toUpperCase()}</span></td>
-        `;
-        tbody.appendChild(tr);
+function printReceipt() {
+    const node = document.getElementById('receiptDocument');
+    if (!node) return;
+    const w = window.open('', '_blank', 'width=400,height=700');
+    w.document.write('<html><head><title>Receipt</title></head><body>' + node.outerHTML + '</body></html>');
+    w.document.close(); w.focus(); w.print(); w.close();
+}
+
+function downloadReceiptPDF() {
+    const node = document.getElementById('receiptDocument');
+    if (!node || !window.html2canvas || !window.jspdf) { printReceipt(); return; }
+    html2canvas(node, { scale: 2 }).then(canvas => {
+        const img = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ unit: 'mm', format: [80, 160] });
+        pdf.addImage(img, 'PNG', 0, 0, 80, 160);
+        pdf.save('receipt.pdf');
     });
 }
 
-async function refreshStoreData() {
-    showNotification('Refreshing store data...', 'info');
-    await loadSummaryData();
-    renderStoreInputs();
-    renderStoreTotals();
-    updateStoreHistory();
-    showNotification('Store data refreshed', 'success');
+function closeReceiptModal() { document.getElementById('receiptModal')?.classList.remove('active'); }
+
+// ============================================================
+// EXPORT
+// ============================================================
+function exportData() { exportRows(transactions, 'all_transactions'); }
+function exportCompleted() { exportRows(completedTransactions, 'completed_carwash'); }
+function exportAccessories() { exportRows(transactions.filter(t => t.category === 'accessories'), 'accessories'); }
+function exportRows(rows, name) {
+    if (!window.XLSX) { showNotification('XLSX not loaded', 'error'); return; }
+    const data = rows.map(r => ({
+        ID: r.id, Date: r.created_at, Category: r.category, Item: r.item || r.car_model,
+        Carwasher: r.carwasher || '', Total: r.total, Payment: r.payment, Status: r.payment_status,
+        AmountPaid: r.amount_paid || '', PaymentNote: r.payment_note || ''
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    XLSX.writeFile(wb, `${name}_${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
-function exportStoreData() {
-    if (!checkPermission('export')) return;
-    
+// ============================================================
+// QUICK ADD
+// ============================================================
+function openQuickAdd() {
+    if (!checkPermission('add')) return;
+    document.getElementById('quickAddForm').reset();
+    document.getElementById('quickAddModal').classList.add('active');
+}
+function closeQuickAdd() { document.getElementById('quickAddModal')?.classList.remove('active'); }
+
+async function saveQuickAdd(e) {
+    e.preventDefault();
+    if (!checkPermission('add')) return;
+    const category = document.getElementById('quickCategory').value;
+    const item = document.getElementById('quickItem').value.trim();
+    const amount = parseFloat(document.getElementById('quickAmount').value) || 0;
+    const carwasher = document.getElementById('quickCarwasher').value.trim();
+    const payment = document.getElementById('quickPayment').value;
+    const status = document.getElementById('quickPaymentStatus').value;
+    if (!item || amount <= 0) { showNotification('Enter item and amount', 'warning'); return; }
+
+    const ok = await showConfirm({
+        icon: '💾', title: 'Save Quick Entry',
+        message: 'Save this entry?',
+        details: { transaction: item, amount: formatPrice(amount), status: status.toUpperCase() },
+        buttonClass: 'btn-success', buttonText: '<i class="fas fa-check"></i> Save'
+    });
+    if (!ok) return;
+
+    const tx = {
+        category, item, car_model: category === 'carwash' ? item : '', carwasher,
+        payment, payment_status: status, total: amount, unit_price: amount, quantity: 1,
+        carwash_price: category === 'carwash' ? amount : 0, detailing_price: 0,
+        services: '', is_ongoing: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+    };
     try {
-        const wb = XLSX.utils.book_new();
-        
-        const storeItems = [
-            ['STORE INVENTORY REPORT'],
-            [''],
-            ['Category', 'Item', 'Amount'],
-            ['Store Items', 'Cigarettes', storeData.cigarettes || 0],
-            ['Store Items', 'Snacks', storeData.snacks || 0],
-            ['Drinks', 'Water', storeData.drinksWater || 0],
-            ['Drinks', 'Soft Drinks', storeData.drinksSoda || 0],
-            ['Drinks', 'Coffee', storeData.drinksCoffee || 0],
-            ['Drinks', 'Juice', storeData.drinksJuice || 0],
-            ['Drinks', 'Energy Drinks', storeData.drinksEnergy || 0],
-            ['Paluto', 'Noodles', storeData.palutoNoodles || 0],
-            ['Paluto', 'Rice Meals', storeData.palutoRice || 0],
-            ['Paluto', 'Soup', storeData.palutoSoup || 0],
-            ['Paluto', 'Silog Meals', storeData.palutoSilog || 0],
-            ['Paluto', 'Appetizers', storeData.palutoAppetizer || 0],
-            ['Other', 'GCash (CW)', storeData.gcashCw || 0],
-            ['Other', 'GCash Foods', storeData.gcashFoods || 0],
-            ['Other', 'Other Sales', storeData.otherSales || 0],
-            ['Other', 'Expenses', storeData.expenses || 0],
-            [],
-            ['SUMMARY'],
-            ['Total Store Sales', formatPrice((storeData.cigarettes || 0) + (storeData.snacks || 0))],
-            ['Total Drinks', formatPrice((storeData.drinksWater || 0) + (storeData.drinksSoda || 0) + 
-                (storeData.drinksCoffee || 0) + (storeData.drinksJuice || 0) + (storeData.drinksEnergy || 0))],
-            ['Total Paluto', formatPrice((storeData.palutoNoodles || 0) + (storeData.palutoRice || 0) + 
-                (storeData.palutoSoup || 0) + (storeData.palutoSilog || 0) + (storeData.palutoAppetizer || 0))],
-            ['Total Other', formatPrice((storeData.otherSales || 0) + (storeData.gcashCw || 0) + 
-                (storeData.gcashFoods || 0) - (storeData.expenses || 0))],
-            ['GRAND TOTAL', formatPrice(
-                (storeData.cigarettes || 0) + (storeData.snacks || 0) + 
-                (storeData.drinksWater || 0) + (storeData.drinksSoda || 0) + 
-                (storeData.drinksCoffee || 0) + (storeData.drinksJuice || 0) + 
-                (storeData.drinksEnergy || 0) + (storeData.palutoNoodles || 0) + 
-                (storeData.palutoRice || 0) + (storeData.palutoSoup || 0) + 
-                (storeData.palutoSilog || 0) + (storeData.palutoAppetizer || 0) + 
-                (storeData.otherSales || 0) + (storeData.gcashCw || 0) + 
-                (storeData.gcashFoods || 0) - (storeData.expenses || 0)
-            )],
-            [''],
-            ['Generated on', new Date().toLocaleString()]
-        ];
-        
-        const ws = XLSX.utils.aoa_to_sheet(storeItems);
-        ws['!cols'] = [{ wch: 20 }, { wch: 25 }, { wch: 15 }];
-        XLSX.utils.book_append_sheet(wb, ws, 'Store Inventory');
-        
-        const filename = `Store_Inventory_${new Date().toISOString().split('T')[0]}.xlsx`;
-        XLSX.writeFile(wb, filename);
-        
-        showNotification(`✅ Store inventory exported successfully!`, 'success');
-    } catch (err) {
-        console.error('Export store error:', err);
-        showNotification('Error exporting store data: ' + err.message, 'error');
+        let saved = tx;
+        if (supabaseClient && isSupabaseConnected) {
+            const { data, error } = await supabaseClient.from(TABLE_NAME).insert(tx).select();
+            if (error) throw error;
+            if (data && data.length) saved = data[0];
+        } else saved.id = Date.now();
+        transactions.unshift(saved);
+        await logAudit('ADD', `Quick add ${item}`, { amount });
+        closeQuickAdd();
+        applyFilters();
+        renderAll();
+        showNotification(`Added ${item} (${formatPrice(amount)})`, 'success');
+    } catch (err) { showNotification('Error: ' + err.message, 'error'); }
+}
+
+// ============================================================
+// ACCESSORIES
+// ============================================================
+function openAccessoryModal() {
+    if (!checkPermission('add')) return;
+    document.getElementById('accessoryForm').reset();
+    document.getElementById('accessoryTotal').value = '';
+    document.getElementById('accessoryModal').classList.add('active');
+}
+function closeAccessoryModal() { document.getElementById('accessoryModal')?.classList.remove('active'); }
+
+function updateAccessoryPrice() {
+    const sel = document.getElementById('accessoryItemSelect');
+    const opt = sel.options[sel.selectedIndex];
+    const price = opt.getAttribute('data-price');
+    if (price) {
+        document.getElementById('accessoryUnitPrice').value = price;
+        document.getElementById('accessoryItemName').value = opt.value;
     }
+    calculateAccessoryTotal();
+}
+
+function calculateAccessoryTotal() {
+    const q = parseFloat(document.getElementById('accessoryQuantity').value) || 0;
+    const p = parseFloat(document.getElementById('accessoryUnitPrice').value) || 0;
+    document.getElementById('accessoryTotal').value = (q * p).toFixed(2);
+}
+
+async function saveAccessory(e) {
+    e.preventDefault();
+    if (!checkPermission('add')) return;
+    const name = document.getElementById('accessoryItemName').value.trim() || document.getElementById('accessoryItemSelect').value;
+    const qty = parseFloat(document.getElementById('accessoryQuantity').value) || 1;
+    const price = parseFloat(document.getElementById('accessoryUnitPrice').value) || 0;
+    const payment = document.getElementById('accessoryPayment').value;
+    const status = document.getElementById('accessoryPaymentStatus').value;
+    if (!name || qty <= 0 || price <= 0) { showNotification('Fill required fields', 'warning'); return; }
+
+    const ok = await showConfirm({
+        icon: '💾', title: 'Save Accessory Sale',
+        message: 'Save this sale?',
+        details: { transaction: name, amount: formatPrice(qty * price), status: status.toUpperCase() },
+        buttonClass: 'btn-success', buttonText: '<i class="fas fa-check"></i> Save'
+    });
+    if (!ok) return;
+
+    const tx = {
+        category: 'accessories', item: name, quantity: qty, unit_price: price, total: qty * price,
+        payment, payment_status: status, carwash_price: 0, detailing_price: 0,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+    };
+    try {
+        let saved = tx;
+        if (supabaseClient && isSupabaseConnected) {
+            const { data, error } = await supabaseClient.from(TABLE_NAME).insert(tx).select();
+            if (error) throw error;
+            if (data && data.length) saved = data[0];
+        } else saved.id = Date.now();
+        transactions.unshift(saved);
+        await logAudit('ADD', `Accessory sale: ${name}`, { amount: tx.total });
+        closeAccessoryModal();
+        applyFilters();
+        renderAll();
+        renderAccessories();
+        showNotification('Sale added', 'success');
+    } catch (err) { showNotification('Error: ' + err.message, 'error'); }
+}
+
+async function addAccessoryTransaction(name, price) {
+    if (!checkPermission('add')) return;
+    const ok = await showConfirm({
+        icon: '🧴', title: 'Quick Accessory Sale',
+        message: `Add "${name}" for ${formatPrice(price)}?`,
+        details: { transaction: name, amount: formatPrice(price), status: 'PAID' },
+        buttonClass: 'btn-success', buttonText: '<i class="fas fa-plus"></i> Add'
+    });
+    if (!ok) return;
+    const tx = {
+        category: 'accessories', item: name, quantity: 1, unit_price: price, total: price,
+        payment: 'CASH', payment_status: 'paid', carwash_price: 0, detailing_price: 0,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+    };
+    try {
+        let saved = tx;
+        if (supabaseClient && isSupabaseConnected) {
+            const { data, error } = await supabaseClient.from(TABLE_NAME).insert(tx).select();
+            if (error) throw error;
+            if (data && data.length) saved = data[0];
+        } else saved.id = Date.now();
+        transactions.unshift(saved);
+        await logAudit('ADD', `Accessory sale: ${name}`, { amount: price });
+        applyFilters();
+        renderAll();
+        renderAccessories();
+        showNotification(`Added ${name}`, 'success');
+    } catch (err) { showNotification('Error: ' + err.message, 'error'); }
+}
+
+function renderAccessories() {
+    const tb = document.getElementById('accessoriesBody');
+    if (!tb) return;
+    const rows = transactions.filter(t => t.category === 'accessories');
+    if (rows.length === 0) { tb.innerHTML = '<tr><td colspan="9" class="empty-state" data-label="">No accessory sales</td></tr>'; return; }
+    tb.innerHTML = '';
+    rows.slice(0, 100).forEach((row, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td data-label="#">${i + 1}</td>
+            <td data-label="Date">${new Date(row.created_at).toLocaleDateString()}</td>
+            <td data-label="Item">${row.item}</td>
+            <td data-label="Qty">${row.quantity}</td>
+            <td data-label="Unit Price">${formatPrice(row.unit_price)}</td>
+            <td data-label="Total" class="price-col">${formatPrice(row.total)}</td>
+            <td data-label="Payment">${row.payment || '—'}</td>
+            <td data-label="Status"><span class="badge badge-${row.payment_status}">${(row.payment_status || '').toUpperCase()}</span></td>
+            <td data-label="">
+                <button class="btn btn-sm btn-info" onclick="quickReceipt(${row.id})"><i class="fas fa-receipt"></i></button>
+                <button class="btn btn-sm btn-danger" onclick="deleteTransaction(${row.id})"><i class="fas fa-trash"></i></button>
+            </td>
+        `;
+        tb.appendChild(tr);
+    });
+    const total = rows.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('totalAccessoriesSales', formatPrice(total));
+    set('totalAccessoriesItems', rows.length);
+    set('avgAccessorySale', formatPrice(rows.length ? total / rows.length : 0));
+    enhanceTablesForMobile();
+}
+
+function filterAccessories() {
+    const q = (document.getElementById('accessorySearch')?.value || '').toLowerCase();
+    const st = document.getElementById('accessoryStatusFilter')?.value || '';
+    let rows = transactions.filter(t => t.category === 'accessories');
+    if (q) rows = rows.filter(t => (t.item || '').toLowerCase().includes(q));
+    if (st) rows = rows.filter(t => t.payment_status === st);
+    const tb = document.getElementById('accessoriesBody');
+    if (!tb) return;
+    if (rows.length === 0) { tb.innerHTML = '<tr><td colspan="9" class="empty-state" data-label="">No matching accessory sales</td></tr>'; return; }
+    tb.innerHTML = '';
+    rows.slice(0, 100).forEach((row, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td data-label="#">${i + 1}</td>
+            <td data-label="Date">${new Date(row.created_at).toLocaleDateString()}</td>
+            <td data-label="Item">${row.item}</td>
+            <td data-label="Qty">${row.quantity}</td>
+            <td data-label="Unit Price">${formatPrice(row.unit_price)}</td>
+            <td data-label="Total" class="price-col">${formatPrice(row.total)}</td>
+            <td data-label="Payment">${row.payment || '—'}</td>
+            <td data-label="Status"><span class="badge badge-${row.payment_status}">${(row.payment_status || '').toUpperCase()}</span></td>
+            <td data-label="">
+                <button class="btn btn-sm btn-info" onclick="quickReceipt(${row.id})"><i class="fas fa-receipt"></i></button>
+                <button class="btn btn-sm btn-danger" onclick="deleteTransaction(${row.id})"><i class="fas fa-trash"></i></button>
+            </td>
+        `;
+        tb.appendChild(tr);
+    });
+    const c = document.getElementById('accessoryFilterCount');
+    if (c) c.textContent = `${rows.length} items`;
+    enhanceTablesForMobile();
+}
+
+function refreshAccessories() {
+    loadData().then(() => { renderAccessories(); showNotification('Refreshed', 'info'); });
+}
+
+// ============================================================
+// STORE
+// ============================================================
+function loadStoreData() {
+    try {
+        const s = localStorage.getItem('carwash_store_data');
+        if (s) Object.assign(storeData, JSON.parse(s));
+    } catch (e) { }
+    Object.keys(storeData).forEach(k => {
+        const input = document.getElementById(k + 'Input');
+        if (input) input.value = storeData[k] || '';
+    });
+    renderStoreTotals();
+}
+
+async function updateStoreValue(key, value) {
+    const oldVal = storeData[key] || 0;
+    const newVal = parseFloat(value) || 0;
+    if (oldVal === newVal) return;
+    const ok = await showConfirm({
+        icon: '📦', title: 'Update Store Value',
+        message: `Update "${key}" to ${formatPrice(newVal)}?`,
+        details: { transaction: key, amount: formatPrice(newVal), status: 'STORE' },
+        buttonClass: 'btn-primary', buttonText: '<i class="fas fa-save"></i> Update'
+    });
+    if (!ok) {
+        const i = document.getElementById(key + 'Input');
+        if (i) i.value = oldVal || '';
+        return;
+    }
+    storeData[key] = newVal;
+    try { localStorage.setItem('carwash_store_data', JSON.stringify(storeData)); } catch (e) { }
+    const s = document.getElementById(key + 'Status');
+    if (s) { s.textContent = '✅'; setTimeout(() => s.textContent = '', 1500); }
+    renderStoreTotals();
+}
+
+function renderStoreTotals() {
+    const s = storeData;
+    const storeT = (s.cigarettes || 0) + (s.snacks || 0);
+    const drinksT = (s.drinksWater || 0) + (s.drinksSoda || 0) + (s.drinksCoffee || 0) + (s.drinksJuice || 0) + (s.drinksEnergy || 0);
+    const palutoT = (s.palutoNoodles || 0) + (s.palutoRice || 0) + (s.palutoSoup || 0) + (s.palutoSilog || 0) + (s.palutoAppetizer || 0);
+    const otherT = (s.gcashCw || 0) + (s.gcashFoods || 0) + (s.otherSales || 0) - (s.expenses || 0);
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('storeCatTotal', formatPrice(storeT));
+    set('drinksCatTotal', formatPrice(drinksT));
+    set('palutoCatTotal', formatPrice(palutoT));
+    set('otherCatTotal', formatPrice(otherT));
+    set('storeItemsTotal', formatPrice(storeT));
+    set('drinksTotalDisplay', formatPrice(drinksT));
+    set('palutoTotalDisplay', formatPrice(palutoT));
+    set('otherTotalDisplay', formatPrice(otherT));
+    set('storeItemsSummary', formatPrice(storeT));
+    set('totalStoreSales', formatPrice(storeT + drinksT + palutoT + otherT));
+    set('totalDrinksSummary', formatPrice(drinksT));
+    set('totalPalutoSummary', formatPrice(palutoT));
+    set('totalOtherSummary', formatPrice(otherT));
+}
+
+function refreshStoreData() { loadStoreData(); updateStoreHistory(); showNotification('Refreshed', 'info'); }
+
+function exportStoreData() {
+    if (!window.XLSX) { showNotification('XLSX not loaded', 'error'); return; }
+    const rows = Object.keys(storeData).map(k => ({ Item: k, Amount: storeData[k] }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Store');
+    XLSX.writeFile(wb, `store_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+function openStoreItemModal() {
+    if (!checkPermission('add')) return;
+    document.getElementById('storeItemForm').reset();
+    updateStoreItemPrice();
+    document.getElementById('storeItemModal').classList.add('active');
+}
+function closeStoreItemModal() { document.getElementById('storeItemModal')?.classList.remove('active'); }
+
+function updateStoreItemPrice() {
+    const cat = document.getElementById('storeItemCategory')?.value;
+    const sel = document.getElementById('storeItemSelect');
+    if (!sel) return;
+    const presets = {
+        store: [{ name: 'Cigarettes', price: 12 }, { name: 'Snacks', price: 10 }],
+        drinks: [{ name: 'Water', price: 15 }, { name: 'Soft Drinks', price: 15 }, { name: 'Coffee', price: 25 }, { name: 'Juice', price: 20 }, { name: 'Energy Drinks', price: 35 }],
+        paluto: [{ name: 'Noodles', price: 30 }, { name: 'Rice Meal', price: 50 }, { name: 'Soup', price: 40 }, { name: 'Silog Meals', price: 60 }, { name: 'Appetizers', price: 45 }],
+        other: [{ name: 'Other Sale', price: 0 }, { name: 'GCash CW', price: 0 }, { name: 'GCash Foods', price: 0 }]
+    };
+    sel.innerHTML = '<option value="">Select item...</option>';
+    (presets[cat] || []).forEach(item => {
+        const o = document.createElement('option');
+        o.value = item.name;
+        o.textContent = `${item.name} - ₱${item.price}`;
+        o.dataset.price = item.price;
+        sel.appendChild(o);
+    });
+}
+
+function calculateStoreItemTotal() {
+    const q = parseFloat(document.getElementById('storeItemQuantity')?.value) || 0;
+    const p = parseFloat(document.getElementById('storeItemPrice')?.value) || 0;
+    const t = document.getElementById('storeItemTotal');
+    if (t) t.value = (q * p).toFixed(2);
+}
+
+async function saveStoreItem(e) {
+    e.preventDefault();
+    if (!checkPermission('add')) return;
+    const category = document.getElementById('storeItemCategory').value;
+    const custom = document.getElementById('storeItemCustom').value.trim();
+    const sel = document.getElementById('storeItemSelect').value;
+    const item = custom || sel;
+    const qty = parseFloat(document.getElementById('storeItemQuantity').value) || 1;
+    const price = parseFloat(document.getElementById('storeItemPrice').value) || 0;
+    const payment = document.getElementById('storeItemPayment').value;
+    const status = document.getElementById('storeItemPaymentStatus').value;
+    if (!item || qty <= 0 || price <= 0 || !category) { showNotification('Fill required fields', 'warning'); return; }
+
+    const ok = await showConfirm({
+        icon: '💾', title: 'Save Store Sale',
+        message: 'Save this sale?',
+        details: { transaction: item, amount: formatPrice(qty * price), status: status.toUpperCase() },
+        buttonClass: 'btn-success', buttonText: '<i class="fas fa-check"></i> Save'
+    });
+    if (!ok) return;
+
+    const tx = {
+        category, item, quantity: qty, unit_price: price, total: qty * price,
+        payment, payment_status: status, carwash_price: 0, detailing_price: 0,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+    };
+    try {
+        let saved = tx;
+        if (supabaseClient && isSupabaseConnected) {
+            const { data, error } = await supabaseClient.from(TABLE_NAME).insert(tx).select();
+            if (error) throw error;
+            if (data && data.length) saved = data[0];
+        } else saved.id = Date.now();
+        transactions.unshift(saved);
+        await logAudit('ADD', `Store sale: ${item}`, { amount: tx.total });
+        closeStoreItemModal();
+        applyFilters();
+        renderAll();
+        renderStoreTotals();
+        updateStoreHistory();
+        showNotification(`Added ${item}`, 'success');
+    } catch (err) { showNotification('Error: ' + err.message, 'error'); }
+}
+
+async function quickAddStoreItem(category, item, price) {
+    if (!checkPermission('add')) return;
+    const ok = await showConfirm({
+        icon: '⚡', title: 'Quick Store Sale',
+        message: `Add "${item}" for ${formatPrice(price)}?`,
+        details: { transaction: item, amount: formatPrice(price), status: 'PAID' },
+        buttonClass: 'btn-success', buttonText: '<i class="fas fa-plus"></i> Add'
+    });
+    if (!ok) return;
+    const tx = {
+        category, item, quantity: 1, unit_price: price, total: price,
+        payment: 'CASH', payment_status: 'paid', carwash_price: 0, detailing_price: 0,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+    };
+    try {
+        let saved = tx;
+        if (supabaseClient && isSupabaseConnected) {
+            const { data, error } = await supabaseClient.from(TABLE_NAME).insert(tx).select();
+            if (error) throw error;
+            if (data && data.length) saved = data[0];
+        } else saved.id = Date.now();
+        transactions.unshift(saved);
+        await logAudit('ADD', `Quick store sale: ${item}`, { amount: price });
+        applyFilters();
+        renderAll();
+        renderStoreTotals();
+        updateStoreHistory();
+        showNotification(`Added ${item}`, 'success', 3000);
+    } catch (err) { showNotification('Error: ' + err.message, 'error'); }
+}
+
+function updateStoreHistory() {
+    const tb = document.getElementById('storeHistoryBody');
+    if (!tb) return;
+    const rows = transactions
+        .filter(t => ['store', 'drinks', 'paluto', 'other'].includes(t.category))
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+        .slice(0, 20);
+    if (rows.length === 0) { tb.innerHTML = '<tr><td colspan="8" class="empty-state" data-label="">No store transactions yet</td></tr>'; return; }
+    tb.innerHTML = '';
+    rows.forEach((row, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td data-label="#">${i + 1}</td>
+            <td data-label="Date">${new Date(row.created_at).toLocaleDateString()}</td>
+            <td data-label="Item">${row.item || '—'}</td>
+            <td data-label="Qty">${row.quantity || 1}</td>
+            <td data-label="Amount" class="price-col">${formatPrice(row.total)}</td>
+            <td data-label="Type"><span class="badge badge-${row.category}">${(row.category || '').toUpperCase()}</span></td>
+            <td data-label="Status"><span class="badge badge-${row.payment_status}">${(row.payment_status || '').toUpperCase()}</span></td>
+            <td data-label=""><button class="btn btn-sm btn-info" onclick="quickReceipt(${row.id})"><i class="fas fa-receipt"></i></button></td>
+        `;
+        tb.appendChild(tr);
+    });
+    enhanceTablesForMobile();
+}
+
+// ============================================================
+// SALARY
+// ============================================================
+async function loadSalaryData() {
+    if (!supabaseClient || !isSupabaseConnected) { salaryData = []; return; }
+    try {
+        const { data } = await supabaseClient.from(SALARY_TABLE).select('*');
+        salaryData = data || [];
+    } catch (e) { salaryData = []; }
+}
+
+function initializeSalaryDateRange() {
+    const n = new Date();
+    const f = new Date(n.setDate(n.getDate() - n.getDay()));
+    salaryDateRange.fromDate = f.toISOString().slice(0, 10);
+    salaryDateRange.toDate = new Date().toISOString().slice(0, 10);
+    updateSalaryDateDisplay();
+}
+
+function updateSalaryDateRange() {
+    const preset = document.getElementById('salaryDatePreset').value;
+    salaryDateRange.preset = preset;
+    const n = new Date();
+    const custom = document.getElementById('salaryCustomDateRange');
+    if (preset === 'custom') { if (custom) custom.style.display = 'flex'; return; }
+    if (custom) custom.style.display = 'none';
+    let from = new Date();
+    if (preset === 'today') from = new Date();
+    else if (preset === 'this-week') from.setDate(n.getDate() - n.getDay());
+    else if (preset === 'last-week') from.setDate(n.getDate() - n.getDay() - 7);
+    else if (preset === 'this-month') from = new Date(n.getFullYear(), n.getMonth(), 1);
+    else if (preset === 'last-month') from = new Date(n.getFullYear(), n.getMonth() - 1, 1);
+    else if (preset === 'all') from = new Date(0);
+    salaryDateRange.fromDate = from.toISOString().slice(0, 10);
+    salaryDateRange.toDate = new Date().toISOString().slice(0, 10);
+    updateSalaryDateDisplay();
+    calculateSalaries(true);
+}
+
+function applyCustomSalaryDateRange() {
+    salaryDateRange.fromDate = document.getElementById('salaryDateFrom').value;
+    salaryDateRange.toDate = document.getElementById('salaryDateTo').value;
+    updateSalaryDateDisplay();
+    calculateSalaries(true);
+}
+
+function updateSalaryDateDisplay() {
+    const el = document.getElementById('salaryDateRangeDisplay');
+    if (el) el.innerHTML = `<i class="fas fa-calendar-alt"></i> <strong>${salaryDateRange.preset}:</strong> ${salaryDateRange.fromDate} → ${salaryDateRange.toDate}`;
+}
+
+async function calculateSalaries(silent) {
+    if (!silent) {
+        const ok = await showConfirm({
+            icon: '🧮', title: 'Calculate Salaries',
+            message: `Recalculate for ${salaryDateRange.fromDate} → ${salaryDateRange.toDate}?`,
+            details: { transaction: 'Salary calc', amount: '—', status: salaryDateRange.preset.toUpperCase() },
+            buttonClass: 'btn-primary', buttonText: '<i class="fas fa-calculator"></i> Calculate'
+        });
+        if (!ok) return;
+    }
+    const from = new Date(salaryDateRange.fromDate);
+    const to = new Date(salaryDateRange.toDate); to.setHours(23, 59, 59);
+    const filtered = completedTransactions.filter(t => {
+        const d = new Date(t.completed_at || t.created_at);
+        return d >= from && d <= to;
+    });
+    const by = {};
+    filtered.forEach(t => {
+        const cw = t.carwasher || 'UNASSIGNED';
+        if (!by[cw]) by[cw] = { count: 0, earnings: 0 };
+        by[cw].count++;
+        by[cw].earnings += parseFloat(t.carwash_price || t.total) || 0;
+    });
+    salaryData = Object.entries(by).map(([name, v], i) => ({
+        id: i + 1, carwasher: name, cars_washed: v.count, total_earnings: v.earnings,
+        rate: 0.5, salary: v.earnings * 0.5, status: 'pending'
+    }));
+    renderSalaryTable();
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('totalCarwashers', salaryData.length);
+    set('totalCarsWashed', salaryData.reduce((s, r) => s + r.cars_washed, 0));
+    set('totalSalaryAmount', formatPrice(salaryData.reduce((s, r) => s + r.salary, 0)));
+    set('salaryPaidCount', salaryData.filter(r => r.status === 'paid').length);
+    set('salaryPendingCount', salaryData.filter(r => r.status !== 'paid').length);
+    if (!silent) showNotification('Salaries calculated', 'success');
+}
+
+function renderSalaryTable() {
+    const tb = document.getElementById('salaryBody');
+    if (!tb) return;
+    if (salaryData.length === 0) { tb.innerHTML = '<tr><td colspan="8" class="empty-state" data-label="">No salary data</td></tr>'; return; }
+    tb.innerHTML = '';
+    salaryData.forEach((row, i) => {
+        const tr = document.createElement('tr');
+        tr.className = 'salary-row-clickable';
+        tr.setAttribute('data-carwasher', row.carwasher);
+        tr.innerHTML = `
+            <td data-label="#">${i + 1}</td>
+            <td data-label="Carwasher">
+                <strong style="color:var(--primary);cursor:pointer;">
+                    <i class="fas fa-user-circle"></i> ${row.carwasher}
+                </strong>
+                <span style="font-size:0.65rem;color:var(--gray-400);display:block;">
+                    Click for job list
+                </span>
+            </td>
+            <td data-label="Cars">${row.cars_washed}</td>
+            <td data-label="Earnings" class="price-col">${formatPrice(row.total_earnings)}</td>
+            <td data-label="Rate" onclick="event.stopPropagation()">
+                <input type="number" class="salary-rate-input" value="${row.rate}" step="0.01" onchange="updateSalaryRate(${i}, this.value)">
+            </td>
+            <td data-label="Salary" class="price-col">${formatPrice(row.salary)}</td>
+            <td data-label="Status"><span class="badge badge-${row.status}">${row.status.toUpperCase()}</span></td>
+            <td data-label="" onclick="event.stopPropagation()">
+                <button class="btn btn-sm btn-success" onclick="markSalaryPaid(${i})" ${row.status === 'paid' ? 'disabled' : ''}>Mark Paid</button>
+                <button class="btn btn-sm btn-info" onclick="viewCarwasherJobs('${row.carwasher.replace(/'/g, "\\'")}')" title="View jobs">
+                    <i class="fas fa-list"></i>
+                </button>
+            </td>
+        `;
+        tr.onclick = (e) => {
+            if (e.target.closest('input, button, select')) return;
+            viewCarwasherJobs(row.carwasher);
+        };
+        tb.appendChild(tr);
+    });
+    const f = document.getElementById('salaryFooter');
+    if (f) f.innerHTML = `<tr class="total-row"><td colspan="5" data-label="">TOTAL</td><td data-label="">${formatPrice(salaryData.reduce((s, r) => s + r.salary, 0))}</td><td colspan="2" data-label=""></td></tr>`;
+    enhanceTablesForMobile();
+}
+
+function viewCarwasherJobs(carwasherName) {
+    const from = new Date(salaryDateRange.fromDate);
+    const to = new Date(salaryDateRange.toDate); to.setHours(23, 59, 59);
+
+    const jobs = completedTransactions.filter(t => {
+        const d = new Date(t.completed_at || t.created_at);
+        if (d < from || d > to) return false;
+        return (t.carwasher || 'UNASSIGNED') === carwasherName;
+    }).sort((a, b) => new Date(b.completed_at || b.created_at) - new Date(a.completed_at || a.created_at));
+
+    const modal = document.getElementById('carwasherJobsModal');
+    if (!modal) return;
+
+    document.getElementById('jobsCarwasherName').textContent = carwasherName;
+    document.getElementById('jobsDateRange').textContent = `${salaryDateRange.fromDate} → ${salaryDateRange.toDate}`;
+    document.getElementById('jobsCount').textContent = jobs.length;
+    document.getElementById('jobsTotal').textContent = formatPrice(
+        jobs.reduce((s, t) => s + (parseFloat(t.carwash_price || t.total) || 0), 0)
+    );
+
+    const tbody = document.getElementById('jobsBody');
+    if (jobs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state" data-label="">No jobs in this date range</td></tr>';
+    } else {
+        tbody.innerHTML = '';
+        jobs.forEach((j, i) => {
+            const dur = (j.started_at && j.completed_at)
+                ? Math.round((new Date(j.completed_at) - new Date(j.started_at)) / 60000) + ' min'
+                : '—';
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td data-label="#">${i + 1}</td>
+                <td data-label="Date">${new Date(j.completed_at || j.created_at).toLocaleDateString()}</td>
+                <td data-label="Time">${new Date(j.completed_at || j.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</td>
+                <td data-label="Car"><strong>${j.car_model || '—'}</strong></td>
+                <td data-label="Plate">${j.plate || '—'}</td>
+                <td data-label="Services">${j.services || '—'}</td>
+                <td data-label="Duration"><span class="badge badge-success">${dur}</span></td>
+                <td data-label="Amount" class="price-col">${formatPrice(j.carwash_price || j.total)}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+    modal.classList.add('active');
+    enhanceTablesForMobile();
+}
+
+function closeCarwasherJobsModal() {
+    document.getElementById('carwasherJobsModal')?.classList.remove('active');
+}
+
+async function updateSalaryRate(i, value) {
+    if (!salaryData[i]) return;
+    const old = salaryData[i].rate;
+    const nv = parseFloat(value) || 0;
+    if (old === nv) return;
+    const ok = await showConfirm({
+        icon: '📝', title: 'Update Rate',
+        message: `Change rate for ${salaryData[i].carwasher} from ${old} to ${nv}?`,
+        details: { transaction: salaryData[i].carwasher, amount: `${nv * 100}%`, status: 'RATE' },
+        buttonClass: 'btn-primary', buttonText: '<i class="fas fa-save"></i> Update'
+    });
+    if (!ok) { renderSalaryTable(); return; }
+    salaryData[i].rate = nv;
+    salaryData[i].salary = salaryData[i].total_earnings * nv;
+    renderSalaryTable();
+    document.getElementById('totalSalaryAmount').textContent = formatPrice(salaryData.reduce((s, r) => s + r.salary, 0));
+}
+
+async function markSalaryPaid(i) {
+    if (!salaryData[i]) return;
+    const ok = await showConfirm({
+        icon: '💰', title: 'Mark Paid',
+        message: `Mark ${salaryData[i].carwasher} as PAID?`,
+        details: { transaction: salaryData[i].carwasher, amount: formatPrice(salaryData[i].salary), status: 'PAID' },
+        buttonClass: 'btn-success', buttonText: '<i class="fas fa-check"></i> Mark Paid'
+    });
+    if (!ok) return;
+    salaryData[i].status = 'paid';
+    renderSalaryTable();
+    document.getElementById('salaryPaidCount').textContent = salaryData.filter(r => r.status === 'paid').length;
+    document.getElementById('salaryPendingCount').textContent = salaryData.filter(r => r.status !== 'paid').length;
+    logAudit('SALARY_UPDATE', `Salary paid: ${salaryData[i].carwasher}`, { amount: salaryData[i].salary });
+}
+
+async function saveSalaries() {
+    if (!supabaseClient || !isSupabaseConnected) { showNotification('Offline — nothing to save', 'warning'); return; }
+    const ok = await showConfirm({
+        icon: '💾', title: 'Save Salaries',
+        message: 'Save salary records to database?',
+        details: { transaction: `${salaryData.length} records`, amount: formatPrice(salaryData.reduce((s, r) => s + r.salary, 0)), status: 'SAVE' },
+        buttonClass: 'btn-success', buttonText: '<i class="fas fa-save"></i> Save'
+    });
+    if (!ok) return;
+    try {
+        for (const r of salaryData) {
+            await supabaseClient.from(SALARY_TABLE).upsert({
+                carwasher: r.carwasher, cars_washed: r.cars_washed,
+                total_earnings: r.total_earnings, rate: r.rate, salary: r.salary,
+                status: r.status, period_from: salaryDateRange.fromDate, period_to: salaryDateRange.toDate
+            }, { onConflict: 'carwasher,period_from,period_to' });
+        }
+        showNotification('Salaries saved', 'success');
+    } catch (err) { showNotification('Failed: ' + err.message, 'error'); }
+}
+
+function exportSalaries() {
+    if (!window.XLSX) { showNotification('XLSX not loaded', 'error'); return; }
+    const ws = XLSX.utils.json_to_sheet(salaryData.map(r => ({
+        Carwasher: r.carwasher, Cars: r.cars_washed, Earnings: r.total_earnings,
+        Rate: r.rate, Salary: r.salary, Status: r.status
+    })));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Salaries');
+    XLSX.writeFile(wb, `salaries_${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
 // ============================================================
 // REPORTS
 // ============================================================
 function generateReport(type) {
-    if (!checkPermission('reports')) return;
+    const custom = document.getElementById('customDateRange');
+    if (type === 'custom') { if (custom) custom.style.display = 'block'; return; }
+    if (custom) custom.style.display = 'none';
     const now = new Date();
-    let fromDate, toDate;
-
-    switch(type) {
-        case 'daily':
-            fromDate = new Date(now); fromDate.setHours(0, 0, 0, 0);
-            toDate = new Date(now); toDate.setHours(23, 59, 59, 999);
-            break;
-        case 'weekly':
-            const day = now.getDay() || 7;
-            fromDate = new Date(now); fromDate.setDate(now.getDate() - day + 1); fromDate.setHours(0, 0, 0, 0);
-            toDate = new Date(now); toDate.setDate(now.getDate() + (7 - day)); toDate.setHours(23, 59, 59, 999);
-            break;
-        case 'monthly':
-            fromDate = new Date(now.getFullYear(), now.getMonth(), 1); fromDate.setHours(0, 0, 0, 0);
-            toDate = new Date(now.getFullYear(), now.getMonth() + 1, 0); toDate.setHours(23, 59, 59, 999);
-            break;
-        case 'yearly':
-            fromDate = new Date(now.getFullYear(), 0, 1); fromDate.setHours(0, 0, 0, 0);
-            toDate = new Date(now.getFullYear(), 11, 31); toDate.setHours(23, 59, 59, 999);
-            break;
-        case 'custom':
-            const customRange = document.getElementById('customDateRange');
-            if (customRange) customRange.style.display = 'block';
-            return;
-        default: return;
-    }
-    
-    const dateFrom = document.getElementById('reportDateFrom');
-    const dateTo = document.getElementById('reportDateTo');
-    if (dateFrom) dateFrom.value = fromDate.toISOString().split('T')[0];
-    if (dateTo) dateTo.value = toDate.toISOString().split('T')[0];
-    generateCustomReport();
+    let from, to = now;
+    if (type === 'daily') from = new Date(now.setHours(0, 0, 0, 0));
+    else if (type === 'weekly') from = new Date(now.setDate(now.getDate() - 7));
+    else if (type === 'monthly') from = new Date(now.getFullYear(), now.getMonth(), 1);
+    else if (type === 'yearly') from = new Date(now.getFullYear(), 0, 1);
+    renderReport(from, to);
 }
 
 function generateCustomReport() {
-    if (!checkPermission('reports')) return;
-    const fromDate = new Date(document.getElementById('reportDateFrom').value);
-    const toDate = new Date(document.getElementById('reportDateTo').value);
-    if (!fromDate || !toDate || fromDate > toDate) {
-        showNotification('Please select a valid date range', 'error');
-        return;
-    }
-    fromDate.setHours(0, 0, 0, 0);
-    toDate.setHours(23, 59, 59, 999);
+    const from = new Date(document.getElementById('reportDateFrom').value);
+    const to = new Date(document.getElementById('reportDateTo').value); to.setHours(23, 59, 59);
+    renderReport(from, to);
+}
+
+function renderReport(from, to) {
     reportData = transactions.filter(t => {
-        const date = new Date(t.created_at);
-        return date >= fromDate && date <= toDate;
+        const d = new Date(t.created_at);
+        return d >= from && d <= to;
     });
-    renderReport(reportData);
-    showNotification(`Report generated with ${reportData.length} transactions`, 'success');
-}
-
-function renderReport(data) {
-    const tbody = document.getElementById('reportBody');
-    const footer = document.getElementById('reportFooter');
-    const summary = document.getElementById('reportSummary');
-
-    if (!data || data.length === 0) {
-        if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No transactions found.</td></tr>';
-        if (footer) footer.innerHTML = '';
-        if (summary) summary.innerHTML = '';
-        return;
-    }
-
-    const totalCarwash = data.filter(t => t.category === 'carwash').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    const totalStore = data.filter(t => t.category === 'store').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    const totalDrinks = data.filter(t => t.category === 'drinks').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    const totalPaluto = data.filter(t => t.category === 'paluto').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    const totalOther = data.filter(t => t.category === 'other').reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-    const totalAll = data.reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-
-    if (summary) {
-        summary.innerHTML = `
-            <div class="report-summary-item"><div class="label">📋 Total</div><div class="value">${data.length}</div></div>
-            <div class="report-summary-item"><div class="label">🚘 Carwash</div><div class="value">${formatPrice(totalCarwash)}</div></div>
-            <div class="report-summary-item"><div class="label">🏪 Store</div><div class="value">${formatPrice(totalStore)}</div></div>
-            <div class="report-summary-item"><div class="label">🥤 Drinks</div><div class="value">${formatPrice(totalDrinks)}</div></div>
-            <div class="report-summary-item"><div class="label">🍜 Paluto</div><div class="value">${formatPrice(totalPaluto)}</div></div>
-            <div class="report-summary-item"><div class="label">💰 Other</div><div class="value">${formatPrice(totalOther)}</div></div>
-            <div class="report-summary-item" style="background:#dbeafe;border-color:#2563eb;"><div class="label">🧾 Total</div><div class="value" style="color:#2563eb;">${formatPrice(totalAll)}</div></div>
+    const tb = document.getElementById('reportBody');
+    if (!tb) return;
+    if (reportData.length === 0) { tb.innerHTML = '<tr><td colspan="6" class="empty-state" data-label="">No records</td></tr>'; return; }
+    tb.innerHTML = '';
+    reportData.forEach(row => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td data-label="Date">${new Date(row.created_at).toLocaleDateString()}</td>
+            <td data-label="Category">${(row.category || '').toUpperCase()}</td>
+            <td data-label="Item">${row.item || row.car_model || '—'}</td>
+            <td data-label="Amount" class="price-col">${formatPrice(row.total)}</td>
+            <td data-label="Payment">${row.payment || '—'}</td>
+            <td data-label="Status"><span class="badge badge-${row.payment_status}">${(row.payment_status || '').toUpperCase()}</span></td>
         `;
+        tb.appendChild(tr);
+    });
+    const total = reportData.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+    const f = document.getElementById('reportFooter');
+    if (f) f.innerHTML = `<tr class="total-row"><td colspan="3" data-label="">TOTAL (${reportData.length})</td><td data-label="">${formatPrice(total)}</td><td colspan="2" data-label=""></td></tr>`;
+    const sum = document.getElementById('reportSummary');
+    if (sum) {
+        const by = {};
+        reportData.forEach(r => { by[r.category] = (by[r.category] || 0) + (parseFloat(r.total) || 0); });
+        sum.innerHTML = `<div class="report-summary-item"><div class="label">Total</div><div class="value">${formatPrice(total)}</div></div>` +
+            Object.entries(by).map(([c, v]) => `<div class="report-summary-item"><div class="label">${c}</div><div class="value">${formatPrice(v)}</div></div>`).join('');
     }
-
-    if (tbody) {
-        tbody.innerHTML = '';
-        data.forEach((row) => {
-            const tr = document.createElement('tr');
-            const categoryEmoji = { carwash: '🚘', store: '🏪', drinks: '🥤', paluto: '🍜', other: '💰' };
-            tr.innerHTML = `
-                <td>${row.created_at ? new Date(row.created_at).toLocaleDateString() : '—'}</td>
-                <td>${categoryEmoji[row.category] || '📋'} ${(row.category || 'other').toUpperCase()}</td>
-                <td>${row.category === 'carwash' ? `${row.car_model} - ${row.services}` : row.item}</td>
-                <td class="price-col">${formatPrice(parseFloat(row.total) || 0)}</td>
-                <td><span class="badge ${getPaymentClass(row.payment)}">${row.payment || '—'}</span></td>
-                <td><span class="badge badge-${row.payment_status || 'unpaid'}">${(row.payment_status || 'unpaid').toUpperCase()}</span></td>
-            `;
-            tbody.appendChild(tr);
-        });
-    }
-
-    if (footer) {
-        footer.innerHTML = `<tr class="total-row"><td colspan="3" style="text-align:right;font-weight:700;">TOTAL</td><td class="price-col" style="font-size:1.1rem;">${formatPrice(totalAll)}</td><td colspan="2"></td></tr>`;
-    }
+    enhanceTablesForMobile();
 }
 
 // ============================================================
-// EXPORT FUNCTIONS
+// MULTI-CATEGORY REPORTS
 // ============================================================
-function exportData() {
-    if (!checkPermission('export')) return;
-    if (transactions.length === 0) {
-        showNotification('No data to export', 'warning');
+let reportState = {
+    preset: 'daily',
+    from: null,
+    to: null,
+    categories: ['carwash', 'store', 'accessories', 'drinks', 'paluto', 'other'],
+    results: {}  // { carwash: [...rows], store: [...rows], ... }
+};
+
+const REPORT_CATEGORY_META = {
+    carwash:     { label: 'Carwash',     icon: '🚘', color: '#2563eb' },
+    store:       { label: 'Store',       icon: '🏪', color: '#16a34a' },
+    accessories: { label: 'Accessories', icon: '🧴', color: '#f59e0b' },
+    drinks:      { label: 'Drinks',      icon: '🥤', color: '#0ea5e9' },
+    paluto:      { label: 'Paluto',      icon: '🍜', color: '#7c3aed' },
+    other:       { label: 'Other',       icon: '💰', color: '#dc2626' }
+};
+
+function setReportPreset(preset) {
+    reportState.preset = preset;
+    document.querySelectorAll('.report-preset-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.preset === preset);
+        btn.classList.toggle('btn-primary', btn.dataset.preset === preset);
+        btn.classList.toggle('btn-outline', btn.dataset.preset !== preset);
+    });
+
+    const custom = document.getElementById('customDateRange');
+    if (preset === 'custom') {
+        if (custom) custom.style.display = 'block';
         return;
     }
-    
-    try {
-        const wb = XLSX.utils.book_new();
-        
-        const headers = [
-            'ID', 'Date', 'Category', 'Item', 'Car Model', 'Plate Number',
-            'Services', 'Carwasher', 'Detailer', 'Quantity', 'Unit Price',
-            'Total', 'Payment Method', 'Payment Status', 'Remarks', 'Bay'
-        ];
-        
-        const excelData = transactions.map(row => {
-            const date = row.created_at ? new Date(row.created_at) : new Date();
-            return {
-                'ID': row.id || '',
-                'Date': date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
-                'Category': (row.category || '').toUpperCase(),
-                'Item': row.item || row.car_model || '',
-                'Car Model': row.car_model || '',
-                'Plate Number': row.plate || '',
-                'Services': row.services || '',
-                'Carwasher': row.carwasher || '',
-                'Detailer': row.detailer || '',
-                'Quantity': row.quantity || 1,
-                'Unit Price': formatPrice(row.unit_price || 0),
-                'Total': formatPrice(row.total || 0),
-                'Payment Method': row.payment || '',
-                'Payment Status': (row.payment_status || '').toUpperCase(),
-                'Remarks': row.remarks || '',
-                'Bay': row.bay || ''
-            };
-        });
-        
-        const ws = XLSX.utils.json_to_sheet(excelData);
-        ws['!cols'] = [
-            { wch: 8 }, { wch: 15 }, { wch: 12 }, { wch: 30 }, { wch: 15 },
-            { wch: 15 }, { wch: 25 }, { wch: 15 }, { wch: 15 }, { wch: 10 },
-            { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 25 }, { wch: 8 }
-        ];
-        
-        XLSX.utils.book_append_sheet(wb, ws, 'Transactions');
-        
-        const summaryData = [
-            ['SUMMARY REPORT'],
-            [''],
-            ['Total Transactions', transactions.length],
-            ['Total Income', formatPrice(transactions.reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0))],
-            ['Generated on', new Date().toLocaleString()],
-            ['Generated by', currentUser ? currentUser.name : 'Unknown']
-        ];
-        const ws2 = XLSX.utils.aoa_to_sheet(summaryData);
-        ws2['!cols'] = [{ wch: 25 }, { wch: 20 }];
-        XLSX.utils.book_append_sheet(wb, ws2, 'Summary');
-        
-        const filename = `Transactions_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
-        XLSX.writeFile(wb, filename);
-        
-        logAudit('EXPORT', `Exported ${transactions.length} transactions to Excel`, { 
-            filename: filename,
-            count: transactions.length,
-            format: 'Excel'
-        });
-        
-        showNotification(`✅ ${transactions.length} transactions exported successfully!`, 'success');
-    } catch (err) {
-        console.error('Export error:', err);
-        showNotification('Error exporting data: ' + err.message, 'error');
+    if (custom) custom.style.display = 'none';
+
+    const now = new Date();
+    let from, to = new Date(now);
+    to.setHours(23, 59, 59, 999);
+
+    if (preset === 'daily') {
+        from = new Date(now); from.setHours(0, 0, 0, 0);
+    } else if (preset === 'weekly') {
+        from = new Date(now); from.setDate(now.getDate() - 7); from.setHours(0, 0, 0, 0);
+    } else if (preset === 'monthly') {
+        from = new Date(now.getFullYear(), now.getMonth(), 1);
+    } else if (preset === 'yearly') {
+        from = new Date(now.getFullYear(), 0, 1);
     }
+
+    reportState.from = from;
+    reportState.to = to;
+
+    const fromStr = from.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+    const fromInput = document.getElementById('reportDateFrom');
+    const toInput = document.getElementById('reportDateTo');
+    if (fromInput) fromInput.value = fromStr;
+    if (toInput) toInput.value = toStr;
+
+    updateReportPeriodDisplay();
+    generateMultiReports();
 }
 
-function exportReportExcel() {
-    if (!checkPermission('export')) return;
-    if (reportData.length === 0) {
-        showNotification('No data to export', 'warning');
-        return;
-    }
-    
-    try {
-        const wb = XLSX.utils.book_new();
-        const excelData = reportData.map(row => ({
-            'Date': row.created_at ? new Date(row.created_at).toLocaleDateString() : '',
-            'Category': (row.category || '').toUpperCase(),
-            'Item': row.category === 'carwash' ? `${row.car_model} - ${row.services}` : row.item,
-            'Amount': formatPrice(parseFloat(row.total) || 0),
-            'Payment': row.payment || '',
-            'Status': (row.payment_status || '').toUpperCase()
-        }));
-        
-        const ws = XLSX.utils.json_to_sheet(excelData);
-        ws['!cols'] = [{ wch: 15 }, { wch: 12 }, { wch: 30 }, { wch: 15 }, { wch: 15 }, { wch: 12 }];
-        XLSX.utils.book_append_sheet(wb, ws, 'Report');
-        
-        const totalAmount = reportData.reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-        const summaryData = [
-            ['REPORT SUMMARY'],
-            [''],
-            ['Date Range', document.getElementById('reportDateFrom').value + ' to ' + document.getElementById('reportDateTo').value],
-            ['Total Transactions', reportData.length],
-            ['Total Amount', formatPrice(totalAmount)],
-            ['Generated on', new Date().toLocaleString()]
-        ];
-        const ws2 = XLSX.utils.aoa_to_sheet(summaryData);
-        ws2['!cols'] = [{ wch: 25 }, { wch: 20 }];
-        XLSX.utils.book_append_sheet(wb, ws2, 'Summary');
-        
-        const filename = `Sales_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
-        XLSX.writeFile(wb, filename);
-        
-        showNotification(`✅ Report exported successfully!`, 'success');
-    } catch (err) {
-        console.error('Export Excel error:', err);
-        showNotification('Error exporting Excel: ' + err.message, 'error');
-    }
+function updateReportPeriodDisplay() {
+    const el = document.getElementById('reportPeriodDisplay');
+    if (!el) return;
+    const from = reportState.from, to = reportState.to;
+    if (!from || !to) { el.innerHTML = '<i class="fas fa-clock"></i> <span>Select period</span>'; return; }
+    const fLabel = from.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const tLabel = to.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const days = Math.round((to - from) / (1000 * 60 * 60 * 24));
+    el.innerHTML = `<i class="fas fa-clock"></i> <span><strong>${fLabel}</strong> → <strong>${tLabel}</strong> · ${days + 1} day${days !== 0 ? 's' : ''}</span>`;
+    const rtb = document.getElementById('rtbPeriod');
+    if (rtb) rtb.textContent = `${from.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} → ${to.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
 }
 
-function exportReportPDF() {
-    if (!checkPermission('export')) return;
-    if (reportData.length === 0) {
-        showNotification('No data to export', 'warning');
+function selectAllCategories(checked) {
+    document.querySelectorAll('.rcs-checkbox').forEach(cb => { cb.checked = checked; });
+}
+
+function getSelectedCategories() {
+    const checked = [];
+    document.querySelectorAll('.rcs-checkbox').forEach(cb => {
+        if (cb.checked) checked.push(cb.value);
+    });
+    return checked;
+}
+
+function generateMultiReports() {
+    // For custom preset, read dates from inputs
+    if (reportState.preset === 'custom') {
+        const fromVal = document.getElementById('reportDateFrom')?.value;
+        const toVal = document.getElementById('reportDateTo')?.value;
+        if (!fromVal || !toVal) {
+            showNotification('Please select both From and To dates', 'warning');
+            return;
+        }
+        reportState.from = new Date(fromVal + 'T00:00:00');
+        reportState.to = new Date(toVal + 'T23:59:59');
+        if (reportState.from > reportState.to) {
+            showNotification('"From" date must be before "To" date', 'warning');
+            return;
+        }
+        updateReportPeriodDisplay();
+    }
+
+    const selected = getSelectedCategories();
+    reportState.categories = selected;
+
+    if (selected.length === 0) {
+        showNotification('Select at least one category', 'warning');
         return;
     }
-    
-    try {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF('landscape', 'mm', 'a4');
-        
-        doc.setFontSize(20);
-        doc.setTextColor(37, 99, 235);
-        doc.text('SALES REPORT', 14, 22);
-        
-        doc.setFontSize(11);
+
+    const from = reportState.from;
+    const to = reportState.to;
+    if (!from || !to) { showNotification('Select a period first', 'warning'); return; }
+
+    // Filter transactions by date AND selected categories
+    const inRange = transactions.filter(t => {
+        const d = new Date(t.created_at);
+        return d >= from && d <= to;
+    });
+
+    reportState.results = {};
+    selected.forEach(cat => {
+        reportState.results[cat] = inRange
+            .filter(t => t.category === cat)
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    });
+
+    renderMultiReports();
+}
+
+function renderMultiReports() {
+    const container = document.getElementById('reportResults');
+    const totalsBar = document.getElementById('reportTotalsBar');
+    if (!container) return;
+
+    const categories = Object.keys(reportState.results);
+    if (categories.length === 0) {
+        container.innerHTML = '<div class="empty-state" style="padding:2rem;">No reports generated yet. Select categories and click Generate.</div>';
+        if (totalsBar) totalsBar.style.display = 'none';
+        return;
+    }
+
+    // Grand totals
+    let grandTotal = 0;
+    let grandTxCount = 0;
+    categories.forEach(cat => {
+        const rows = reportState.results[cat] || [];
+        grandTxCount += rows.length;
+        grandTotal += rows.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+    });
+
+    // Totals bar
+    if (totalsBar) {
+        totalsBar.style.display = 'grid';
+        document.getElementById('rtbGrand').textContent = formatPrice(grandTotal);
+        document.getElementById('rtbTxCount').textContent = grandTxCount;
+        document.getElementById('rtbCategories').textContent = categories.length;
+    }
+
+    // Build result cards
+    container.innerHTML = '';
+    categories.forEach(cat => {
+        const meta = REPORT_CATEGORY_META[cat] || { label: cat, icon: '📦', color: '#64748b' };
+        const rows = reportState.results[cat] || [];
+        const catTotal = rows.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+        const paidCount = rows.filter(r => r.payment_status === 'paid').length;
+        const unpaidCount = rows.filter(r => r.payment_status === 'unpaid').length;
+        const partialCount = rows.filter(r => r.payment_status === 'partial').length;
+        const itemCount = rows.reduce((s, r) => s + (parseFloat(r.quantity) || 1), 0);
+
+        const card = document.createElement('div');
+        card.className = 'report-category-card';
+        card.style.setProperty('--rc-color', meta.color);
+
+        card.innerHTML = `
+            <div class="rcc-header">
+                <div class="rcc-title-group">
+                    <span class="rcc-icon">${meta.icon}</span>
+                    <div>
+                        <div class="rcc-title">${meta.label}</div>
+                        <div class="rcc-count">${rows.length} transaction${rows.length !== 1 ? 's' : ''}</div>
+                    </div>
+                </div>
+                <div class="rcc-total">${formatPrice(catTotal)}</div>
+            </div>
+
+            <div class="rcc-stats">
+                <div class="rcc-stat"><span class="rcc-stat-label">Items</span><span class="rcc-stat-value">${itemCount}</span></div>
+                <div class="rcc-stat"><span class="rcc-stat-label">Paid</span><span class="rcc-stat-value text-success">${paidCount}</span></div>
+                <div class="rcc-stat"><span class="rcc-stat-label">Unpaid</span><span class="rcc-stat-value text-danger">${unpaidCount}</span></div>
+                <div class="rcc-stat"><span class="rcc-stat-label">Partial</span><span class="rcc-stat-value text-warning">${partialCount}</span></div>
+            </div>
+
+            <div class="rcc-body">
+                ${rows.length === 0
+                    ? '<div class="rcc-empty">No transactions in this period</div>'
+                    : `<div class="table-wrap">
+                        <table class="rcc-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Date</th>
+                                    <th>Item</th>
+                                    ${cat === 'carwash' ? '<th>Carwasher</th>' : ''}
+                                    <th>Qty</th>
+                                    <th>Total</th>
+                                    <th>Payment</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${rows.slice(0, 50).map((r, i) => `
+                                    <tr>
+                                        <td data-label="#">${i + 1}</td>
+                                        <td data-label="Date">${new Date(r.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
+                                        <td data-label="Item">${r.item || r.car_model || '—'}</td>
+                                        ${cat === 'carwash' ? `<td data-label="Carwasher">${r.carwasher || '—'}</td>` : ''}
+                                        <td data-label="Qty">${r.quantity || 1}</td>
+                                        <td data-label="Total" class="price-col">${formatPrice(r.total)}</td>
+                                        <td data-label="Payment">${r.payment || '—'}</td>
+                                        <td data-label="Status"><span class="badge badge-${r.payment_status}">${(r.payment_status || '').toUpperCase()}</span></td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                            <tfoot>
+                                <tr class="total-row">
+                                    <td colspan="${cat === 'carwash' ? 4 : 3}" data-label="">TOTAL (${rows.length})</td>
+                                    <td data-label="">${itemCount}</td>
+                                    <td data-label="">${formatPrice(catTotal)}</td>
+                                    <td colspan="2" data-label=""></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                        ${rows.length > 50 ? `<div class="rcc-more">Showing 50 of ${rows.length} · Export to see all</div>` : ''}
+                    </div>`
+                }
+            </div>
+
+            <div class="rcc-actions">
+                <button class="btn btn-sm btn-outline" onclick="exportCategoryExcel('${cat}')">
+                    <i class="fas fa-file-excel"></i> Excel
+                </button>
+                <button class="btn btn-sm btn-outline" onclick="exportCategoryCSV('${cat}')">
+                    <i class="fas fa-file-csv"></i> CSV
+                </button>
+                <button class="btn btn-sm btn-outline" onclick="printCategoryReport('${cat}')">
+                    <i class="fas fa-print"></i> Print
+                </button>
+            </div>
+        `;
+        container.appendChild(card);
+    });
+    enhanceTablesForMobile();
+}
+
+// ============================================================
+// EXPORT: SINGLE CATEGORY
+// ============================================================
+function getReportRowsForExport(cat) {
+    const rows = reportState.results[cat] || [];
+    return rows.map(r => ({
+        ID: r.id,
+        Date: new Date(r.created_at).toLocaleString(),
+        Category: (r.category || '').toUpperCase(),
+        Item: r.item || r.car_model || '',
+        Carwasher: r.carwasher || '',
+        Quantity: r.quantity || 1,
+        UnitPrice: r.unit_price || r.total,
+        Total: r.total,
+        Payment: r.payment || '',
+        Status: (r.payment_status || '').toUpperCase(),
+        AmountPaid: r.amount_paid || '',
+        PaymentNote: r.payment_note || ''
+    }));
+}
+
+function exportCategoryExcel(cat) {
+    if (!window.XLSX) { showNotification('XLSX not loaded', 'error'); return; }
+    const rows = getReportRowsForExport(cat);
+    if (rows.length === 0) { showNotification('No data to export', 'warning'); return; }
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, cat);
+    const from = reportState.from.toISOString().slice(0, 10);
+    const to = reportState.to.toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `${cat}_report_${from}_to_${to}.xlsx`);
+    showNotification(`${cat} report exported`, 'success');
+}
+
+function exportCategoryCSV(cat) {
+    const rows = getReportRowsForExport(cat);
+    if (rows.length === 0) { showNotification('No data to export', 'warning'); return; }
+    const headers = Object.keys(rows[0]);
+    const csv = [
+        headers.join(','),
+        ...rows.map(r => headers.map(h => {
+            const v = r[h] ?? '';
+            const s = String(v).replace(/"/g, '""');
+            return /[",\n]/.test(s) ? `"${s}"` : s;
+        }).join(','))
+    ].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${cat}_report_${reportState.from.toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showNotification(`${cat} CSV exported`, 'success');
+}
+
+function printCategoryReport(cat) {
+    const meta = REPORT_CATEGORY_META[cat];
+    const rows = reportState.results[cat] || [];
+    const catTotal = rows.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+
+    const html = `
+        <html><head><title>${meta.label} Report</title>
+        <style>
+            body { font-family: sans-serif; padding: 20px; color: #1e293b; }
+            h1 { font-size: 22px; margin-bottom: 4px; }
+            .sub { color: #64748b; font-size: 12px; margin-bottom: 20px; }
+            table { width: 100%; border-collapse: collapse; font-size: 11px; }
+            th { background: #f1f5f9; padding: 8px 6px; text-align: left; border-bottom: 2px solid #cbd5e1; }
+            td { padding: 6px; border-bottom: 1px solid #e2e8f0; }
+            tfoot td { background: #f1f5f9; font-weight: bold; border-top: 2px solid #cbd5e1; }
+            .price { text-align: right; font-weight: 600; }
+        </style></head><body>
+        <h1>${meta.icon} ${meta.label} Report</h1>
+        <div class="sub">${reportState.from.toLocaleDateString()} — ${reportState.to.toLocaleDateString()} · ${rows.length} transactions · Total: ${formatPrice(catTotal)}</div>
+        <table>
+            <thead><tr>
+                <th>#</th><th>Date</th><th>Item</th>
+                ${cat === 'carwash' ? '<th>Carwasher</th>' : ''}
+                <th>Qty</th><th class="price">Total</th><th>Payment</th><th>Status</th>
+            </tr></thead>
+            <tbody>
+                ${rows.map((r, i) => `<tr>
+                    <td>${i + 1}</td>
+                    <td>${new Date(r.created_at).toLocaleDateString()}</td>
+                    <td>${r.item || r.car_model || '—'}</td>
+                    ${cat === 'carwash' ? `<td>${r.carwasher || '—'}</td>` : ''}
+                    <td>${r.quantity || 1}</td>
+                    <td class="price">${formatPrice(r.total)}</td>
+                    <td>${r.payment || '—'}</td>
+                    <td>${(r.payment_status || '').toUpperCase()}</td>
+                </tr>`).join('')}
+            </tbody>
+            <tfoot><tr>
+                <td colspan="${cat === 'carwash' ? 4 : 3}">TOTAL</td>
+                <td>${rows.reduce((s, r) => s + (parseFloat(r.quantity) || 1), 0)}</td>
+                <td class="price">${formatPrice(catTotal)}</td>
+                <td colspan="2"></td>
+            </tr></tfoot>
+        </table>
+        </body></html>
+    `;
+    const w = window.open('', '_blank', 'width=900,height=700');
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    setTimeout(() => { w.print(); }, 300);
+}
+
+// ============================================================
+// EXPORT: ALL CATEGORIES (multi-sheet Excel)
+// ============================================================
+function exportAllReportsExcel() {
+    if (!window.XLSX) { showNotification('XLSX not loaded', 'error'); return; }
+    const categories = Object.keys(reportState.results);
+    if (categories.length === 0) {
+        showNotification('Generate reports first', 'warning');
+        return;
+    }
+
+    const wb = XLSX.utils.book_new();
+    let grandTotal = 0;
+    let grandTxCount = 0;
+    const summaryRows = [];
+
+    categories.forEach(cat => {
+        const rows = getReportRowsForExport(cat);
+        const catTotal = rows.reduce((s, r) => s + (parseFloat(r.Total) || 0), 0);
+        grandTotal += catTotal;
+        grandTxCount += rows.length;
+
+        // Summary row
+        summaryRows.push({
+            Category: REPORT_CATEGORY_META[cat]?.label || cat,
+            Transactions: rows.length,
+            Total: catTotal
+        });
+
+        // Category sheet
+        if (rows.length > 0) {
+            const ws = XLSX.utils.json_to_sheet(rows);
+            // Sheet name max 31 chars, no special chars
+            let sheetName = (REPORT_CATEGORY_META[cat]?.label || cat).replace(/[\/\\?*\[\]:]/g, '');
+            if (sheetName.length > 31) sheetName = sheetName.slice(0, 31);
+            XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        }
+    });
+
+    // Summary sheet first
+    summaryRows.push({ Category: 'GRAND TOTAL', Transactions: grandTxCount, Total: grandTotal });
+    const summaryWs = XLSX.utils.json_to_sheet(summaryRows);
+    // Insert as first sheet
+    wb.SheetNames.unshift('Summary');
+    wb.Sheets['Summary'] = summaryWs;
+
+    const from = reportState.from.toISOString().slice(0, 10);
+    const to = reportState.to.toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `all_reports_${from}_to_${to}.xlsx`);
+    showNotification(`Exported ${categories.length} category report(s)`, 'success');
+}
+
+// ============================================================
+// EXPORT: ALL CATEGORIES (PDF)
+// ============================================================
+function exportAllReportsPDF() {
+    if (!window.jspdf) { showNotification('PDF library not loaded', 'error'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const categories = Object.keys(reportState.results);
+    if (categories.length === 0) { showNotification('Generate reports first', 'warning'); return; }
+
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    let y = 20;
+
+    // Cover
+    doc.setFontSize(22);
+    doc.setTextColor(30, 41, 59);
+    doc.text('Sales Report', 14, y);
+    y += 8;
+    doc.setFontSize(11);
+    doc.setTextColor(100, 116, 139);
+    doc.text(
+        `${reportState.from.toLocaleDateString()} — ${reportState.to.toLocaleDateString()}`,
+        14, y
+    );
+    y += 6;
+    doc.setFontSize(9);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, y);
+    y += 10;
+
+    // Summary
+    doc.setFontSize(13);
+    doc.setTextColor(30, 41, 59);
+    doc.text('Summary', 14, y);
+    y += 4;
+
+    const summaryBody = [];
+    let grandTotal = 0;
+    let grandTx = 0;
+    categories.forEach(cat => {
+        const rows = reportState.results[cat] || [];
+        const catTotal = rows.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+        grandTotal += catTotal;
+        grandTx += rows.length;
+        summaryBody.push([
+            REPORT_CATEGORY_META[cat]?.label || cat,
+            rows.length.toString(),
+            formatPrice(catTotal)
+        ]);
+    });
+    summaryBody.push([{ content: 'GRAND TOTAL', styles: { fontStyle: 'bold' } },
+                      { content: grandTx.toString(), styles: { fontStyle: 'bold' } },
+                      { content: formatPrice(grandTotal), styles: { fontStyle: 'bold' } }]);
+
+    doc.autoTable({
+        startY: y,
+        head: [['Category', 'Transactions', 'Total']],
+        body: summaryBody,
+        theme: 'striped',
+        headStyles: { fillColor: [37, 99, 235] },
+        styles: { fontSize: 9 },
+        margin: { left: 14, right: 14 }
+    });
+
+    // Per-category pages
+    categories.forEach(cat => {
+        const rows = reportState.results[cat] || [];
+        const meta = REPORT_CATEGORY_META[cat];
+        doc.addPage();
+        y = 20;
+        doc.setFontSize(16);
+        doc.setTextColor(30, 41, 59);
+        doc.text(`${meta.icon.replace(/[^\w\s]/g, '')} ${meta.label} Report`, 14, y);
+        y += 5;
+        const catTotal = rows.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+        doc.setFontSize(9);
         doc.setTextColor(100, 116, 139);
-        doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 30);
-        doc.text(`Date Range: ${document.getElementById('reportDateFrom').value} to ${document.getElementById('reportDateTo').value}`, 14, 37);
-        
-        const totalAmount = reportData.reduce((sum, r) => sum + (parseFloat(r.total) || 0), 0);
-        doc.setFontSize(12);
-        doc.setTextColor(0, 0, 0);
-        doc.text(`Total Transactions: ${reportData.length}  |  Total Amount: ${formatPrice(totalAmount)}`, 14, 44);
-        
-        const tableData = reportData.map(row => [
-            row.created_at ? new Date(row.created_at).toLocaleDateString() : '',
-            (row.category || '').toUpperCase(),
-            row.category === 'carwash' ? `${row.car_model} - ${row.services}` : (row.item || ''),
-            formatPrice(parseFloat(row.total) || 0),
-            row.payment || '',
-            (row.payment_status || '').toUpperCase()
+        doc.text(`${rows.length} transactions · Total: ${formatPrice(catTotal)}`, 14, y);
+        y += 4;
+
+        if (rows.length === 0) {
+            doc.text('No transactions in this period.', 14, y + 5);
+            return;
+        }
+
+        const body = rows.map((r, i) => [
+            (i + 1).toString(),
+            new Date(r.created_at).toLocaleDateString(),
+            (r.item || r.car_model || '—').substring(0, 30),
+            (r.quantity || 1).toString(),
+            formatPrice(r.total),
+            r.payment || '—',
+            (r.payment_status || '').toUpperCase()
         ]);
 
         doc.autoTable({
-            startY: 50,
-            head: [['Date', 'Category', 'Item', 'Amount', 'Payment', 'Status']],
-            body: tableData,
+            startY: y + 2,
+            head: [['#', 'Date', 'Item', 'Qty', 'Total', 'Payment', 'Status']],
+            body: body,
             theme: 'striped',
-            styles: { fontSize: 7, cellPadding: 2 },
-            headStyles: { fillColor: [37, 99, 235], textColor: [255, 255, 255], fontSize: 8, fontStyle: 'bold' },
-            footStyles: { fillColor: [241, 245, 249] },
-            columnStyles: {
-                0: { cellWidth: 25 },
-                1: { cellWidth: 20 },
-                2: { cellWidth: 45 },
-                3: { cellWidth: 25 },
-                4: { cellWidth: 25 },
-                5: { cellWidth: 20 }
-            }
+            headStyles: { fillColor: [37, 99, 235] },
+            styles: { fontSize: 8 },
+            columnStyles: { 4: { halign: 'right' } },
+            margin: { left: 14, right: 14 }
         });
+    });
 
-        const finalY = doc.lastAutoTable.finalY || 50;
-        doc.setFontSize(9);
-        doc.setTextColor(100, 116, 139);
-        doc.text(`Total Income: ${formatPrice(totalAmount)}`, 14, finalY + 10);
-        doc.text(`Total Transactions: ${reportData.length}`, 14, finalY + 17);
-        doc.text(`Generated by: ${currentUser ? currentUser.name : 'Unknown'}`, 14, finalY + 24);
-        doc.text(`© MINI BOSS CARWASH - ${new Date().getFullYear()}`, 14, finalY + 31);
-        
-        const filename = `Sales_Report_${new Date().toISOString().split('T')[0]}.pdf`;
-        doc.save(filename);
-        
-        showNotification(`✅ PDF exported successfully!`, 'success');
-    } catch (err) {
-        console.error('Export PDF error:', err);
-        showNotification('Error exporting PDF: ' + err.message, 'error');
+    // Page numbers
+    const totalPages = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(148, 163, 184);
+        doc.text(
+            `Page ${i} of ${totalPages}`,
+            pageW - 14, pageH - 8, { align: 'right' }
+        );
     }
-}
 
-function exportSalaries() {
-    if (!checkPermission('salary')) return;
-    if (!salaryData || salaryData.length === 0) {
-        showNotification('No salary data to export', 'warning');
-        return;
-    }
-    
-    try {
-        const wb = XLSX.utils.book_new();
-        const excelData = salaryData.map((row, idx) => ({
-            '#': idx + 1,
-            'Carwasher': row.name || '',
-            'Cars Washed': row.cars_washed || 0,
-            'Total Earnings': formatPrice(row.total_earnings || 0),
-            'Rate': (row.rate * 100).toFixed(0) + '%',
-            'Salary': formatPrice(row.salary || 0),
-            'Status': (row.status || '').toUpperCase()
-        }));
-        
-        const ws = XLSX.utils.json_to_sheet(excelData);
-        ws['!cols'] = [
-            { wch: 6 }, { wch: 20 }, { wch: 15 }, { wch: 20 }, { wch: 10 }, { wch: 20 }, { wch: 15 }
-        ];
-        XLSX.utils.book_append_sheet(wb, ws, 'Salaries');
-        
-        const totalSalary = salaryData.reduce((sum, s) => sum + (s.salary || 0), 0);
-        const summaryData = [
-            ['SALARY SUMMARY'],
-            [''],
-            ['Total Carwashers', salaryData.length],
-            ['Total Salary', formatPrice(totalSalary)],
-            ['Paid Count', salaryData.filter(s => s.status === 'paid').length],
-            ['Pending Count', salaryData.filter(s => s.status === 'pending').length],
-            [''],
-            ['Generated on', new Date().toLocaleString()]
-        ];
-        const ws2 = XLSX.utils.aoa_to_sheet(summaryData);
-        ws2['!cols'] = [{ wch: 25 }, { wch: 20 }];
-        XLSX.utils.book_append_sheet(wb, ws2, 'Summary');
-        
-        const filename = `Salaries_${new Date().toISOString().split('T')[0]}.xlsx`;
-        XLSX.writeFile(wb, filename);
-        
-        showNotification(`✅ Salaries exported successfully!`, 'success');
-    } catch (err) {
-        console.error('Export salaries error:', err);
-        showNotification('Error exporting salaries: ' + err.message, 'error');
-    }
+    const from = reportState.from.toISOString().slice(0, 10);
+    const to = reportState.to.toISOString().slice(0, 10);
+    doc.save(`all_reports_${from}_to_${to}.pdf`);
+    showNotification('PDF exported', 'success');
 }
 
 // ============================================================
-// PRICE MANAGEMENT
+// PRINT: ALL REPORTS
+// ============================================================
+function printAllReports() {
+    const categories = Object.keys(reportState.results);
+    if (categories.length === 0) { showNotification('Generate reports first', 'warning'); return; }
+
+    let html = `
+        <html><head><title>All Reports</title>
+        <style>
+            body { font-family: sans-serif; padding: 20px; color: #1e293b; }
+            h1 { font-size: 24px; margin-bottom: 4px; }
+            h2 { font-size: 16px; margin-top: 24px; padding-bottom: 4px; border-bottom: 2px solid #e2e8f0; }
+            .sub { color: #64748b; font-size: 12px; margin-bottom: 20px; }
+            table { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 6px; }
+            th { background: #f1f5f9; padding: 6px 4px; text-align: left; border-bottom: 2px solid #cbd5e1; }
+            td { padding: 4px; border-bottom: 1px solid #e2e8f0; }
+            tfoot td { background: #f1f5f9; font-weight: bold; }
+            .price { text-align: right; font-weight: 600; }
+            .summary-table td, .summary-table th { font-size: 11px; }
+            .page-break { page-break-after: always; }
+        </style></head><body>
+        <h1>All Sales Reports</h1>
+        <div class="sub">${reportState.from.toLocaleDateString()} — ${reportState.to.toLocaleDateString()} · Generated ${new Date().toLocaleString()}</div>
+
+        <h2>Summary</h2>
+        <table class="summary-table">
+            <thead><tr><th>Category</th><th>Transactions</th><th class="price">Total</th></tr></thead>
+            <tbody>
+    `;
+
+    let grandTotal = 0;
+    let grandTx = 0;
+    categories.forEach(cat => {
+        const rows = reportState.results[cat] || [];
+        const catTotal = rows.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+        grandTotal += catTotal;
+        grandTx += rows.length;
+        const meta = REPORT_CATEGORY_META[cat];
+        html += `<tr><td>${meta.label}</td><td>${rows.length}</td><td class="price">${formatPrice(catTotal)}</td></tr>`;
+    });
+    html += `<tr style="font-weight:bold;background:#f1f5f9;"><td>GRAND TOTAL</td><td>${grandTx}</td><td class="price">${formatPrice(grandTotal)}</td></tr>`;
+    html += `</tbody></table>`;
+
+    // Per-category
+    categories.forEach(cat => {
+        const rows = reportState.results[cat] || [];
+        const meta = REPORT_CATEGORY_META[cat];
+        const catTotal = rows.reduce((s, r) => s + (parseFloat(r.total) || 0), 0);
+        html += `
+            <div class="page-break"></div>
+            <h2>${meta.label} — ${rows.length} transactions · Total: ${formatPrice(catTotal)}</h2>
+            <table>
+                <thead><tr><th>#</th><th>Date</th><th>Item</th>${cat === 'carwash' ? '<th>Carwasher</th>' : ''}<th>Qty</th><th class="price">Total</th><th>Status</th></tr></thead>
+                <tbody>
+                    ${rows.length === 0
+                        ? '<tr><td colspan="7" style="text-align:center;color:#94a3b8;">No transactions</td></tr>'
+                        : rows.map((r, i) => `<tr>
+                            <td>${i + 1}</td>
+                            <td>${new Date(r.created_at).toLocaleDateString()}</td>
+                            <td>${r.item || r.car_model || '—'}</td>
+                            ${cat === 'carwash' ? `<td>${r.carwasher || '—'}</td>` : ''}
+                            <td>${r.quantity || 1}</td>
+                            <td class="price">${formatPrice(r.total)}</td>
+                            <td>${(r.payment_status || '').toUpperCase()}</td>
+                        </tr>`).join('')
+                    }
+                </tbody>
+            </table>
+        `;
+    });
+
+    html += '</body></html>';
+
+    const w = window.open('', '_blank', 'width=900,height=700');
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    setTimeout(() => { w.print(); }, 400);
+}
+
+
+function exportReportExcel() {
+    if (!window.XLSX) { showNotification('XLSX not loaded', 'error'); return; }
+    const ws = XLSX.utils.json_to_sheet(reportData.map(r => ({
+        Date: r.created_at, Category: r.category, Item: r.item || r.car_model,
+        Amount: r.total, Payment: r.payment, Status: r.payment_status
+    })));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Report');
+    XLSX.writeFile(wb, `report_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+function exportReportPDF() {
+    if (!window.jspdf) { showNotification('PDF library not loaded', 'error'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.text('Sales Report', 14, 20);
+    if (window.jspdf.plugins?.autotable) {
+        const rows = reportData.map(r => [new Date(r.created_at).toLocaleDateString(), r.category, r.item || r.car_model, formatPrice(r.total), r.payment, r.payment_status]);
+        doc.autoTable({ head: [['Date', 'Category', 'Item', 'Amount', 'Payment', 'Status']], body: rows, startY: 30 });
+    }
+    doc.save(`report_${new Date().toISOString().slice(0, 10)}.pdf`);
+}
+
+// ============================================================
+// PRICES
 // ============================================================
 async function loadServicePrices() {
     try {
         if (supabaseClient && isSupabaseConnected) {
-            const { data, error } = await supabaseClient
-                .from(SERVICE_PRICES_TABLE)
-                .select('*')
-                .order('service_category')
-                .order('service_name')
-                .order('size_category');
+            const { data, error } = await supabaseClient.from(SERVICE_PRICES_TABLE).select('*').order('service_category');
             if (!error && data && data.length > 0) {
                 servicePrices = data;
-                console.log(`✅ Loaded ${servicePrices.length} service prices from database`);
                 renderPriceSettings();
                 populateServiceDropdowns();
                 return;
             }
         }
-        servicePrices = getStaticServicePrices();
-        console.log(`📄 Using ${servicePrices.length} static service prices`);
-        renderPriceSettings();
-        populateServiceDropdowns();
-        if (supabaseClient && isSupabaseConnected) {
-            await seedServicePrices();
-        }
-    } catch (err) {
-        console.warn('Could not load service prices:', err);
-        servicePrices = getStaticServicePrices();
-        renderPriceSettings();
-        populateServiceDropdowns();
-    }
-}
-
-async function seedServicePrices() {
-    try {
-        const { data, error } = await supabaseClient
-            .from(SERVICE_PRICES_TABLE)
-            .select('id')
-            .limit(1);
-        if (!error && data && data.length === 0) {
-            const staticPrices = getStaticServicePrices();
-            for (const price of staticPrices) {
-                await supabaseClient.from(SERVICE_PRICES_TABLE).insert(price);
-            }
-            console.log('✅ Seeded service prices to database');
-            showNotification('Service prices seeded to database', 'success');
-            await logAudit('PRICE_UPDATE', 'Seeded initial service prices', { count: staticPrices.length });
-        }
-    } catch (err) {
-        console.warn('Could not seed service prices:', err);
-    }
-}
-
-async function saveAllPrices() {
-    if (!checkPermission('prices')) return;
-    if (changedPrices.size === 0) {
-        showNotification('No changes to save', 'info');
-        return;
-    }
-
-    const confirmed = await showConfirm({
-        icon: '💰', iconColor: '#2563eb', title: 'Save Price Changes',
-        message: `Are you sure you want to save ${changedPrices.size} price changes?`,
-        details: {
-            transaction: `<strong>${changedPrices.size}</strong> prices will be updated`,
-            amount: 'This will affect all future transactions',
-            status: 'Price Update'
-        },
-        buttonClass: 'btn-success', buttonText: '<i class="fas fa-save"></i> Save Changes'
-    });
-    if (!confirmed) return;
-
-    try {
-        let savedCount = 0;
-        const changes = [];
-
-        for (const uniqueId of changedPrices) {
-            const [category, serviceName, size] = uniqueId.split('-');
-            const inputId = `price_${uniqueId.replace(/[^a-zA-Z0-9]/g, '_')}`;
-            const input = document.getElementById(inputId);
-            if (!input) continue;
-
-            const newPrice = parseFloat(input.value);
-            if (isNaN(newPrice) || newPrice < 0) continue;
-
-            const original = servicePrices.find(p => 
-                p.service_category === category &&
-                p.service_name === serviceName &&
-                p.size_category === size
-            );
-            if (!original) continue;
-
-            const oldPrice = original.price;
-
-            if (supabaseClient && isSupabaseConnected) {
-                const { error } = await supabaseClient
-                    .from(SERVICE_PRICES_TABLE)
-                    .update({ price: newPrice, updated_at: new Date().toISOString() })
-                    .eq('id', original.id);
-                if (error) {
-                    console.error('Error saving price:', error);
-                    continue;
-                }
-            }
-
-            original.price = newPrice;
-            savedCount++;
-            changes.push({
-                service: `${serviceName} (${size})`,
-                old_price: oldPrice,
-                new_price: newPrice
-            });
-
-            input.className = 'price-input saved';
-            setTimeout(() => {
-                if (input) input.className = 'price-input';
-            }, 1500);
-        }
-
-        changedPrices.clear();
-        
-        await logAudit('PRICE_UPDATE', `Updated ${savedCount} service prices`, {
-            changes: changes,
-            count: savedCount
-        });
-
-        showNotification(`✅ ${savedCount} prices saved successfully`, 'success');
-        populateServiceDropdowns();
-        renderPriceSettings();
-
-    } catch (err) {
-        console.error('Error saving prices:', err);
-        showNotification('Error saving prices: ' + err.message, 'error');
-    }
+    } catch (e) { }
+    servicePrices = getStaticServicePrices();
+    renderPriceSettings();
+    populateServiceDropdowns();
 }
 
 function renderPriceSettings() {
-    const container = document.getElementById('priceSettingsContainer');
-    if (!container) return;
-
-    if (!servicePrices || servicePrices.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state">
-                <i class="fas fa-tags"></i>
-                <h3>No prices found</h3>
-                <p>Click refresh to load prices from database</p>
-                <button class="btn btn-primary" onclick="loadServicePrices()" style="margin-top:0.5rem;">
-                    <i class="fas fa-sync"></i> Refresh
-                </button>
-            </div>`;
-        return;
-    }
-
-    const categories = {};
-    servicePrices.forEach(p => {
-        if (!categories[p.service_category]) categories[p.service_category] = [];
-        categories[p.service_category].push(p);
+    const c = document.getElementById('priceSettingsContainer');
+    if (!c) return;
+    const count = document.getElementById('priceCount');
+    if (count) count.textContent = servicePrices.length;
+    const grouped = {};
+    servicePrices.forEach((s, i) => {
+        if (!grouped[s.service_category]) grouped[s.service_category] = [];
+        grouped[s.service_category].push({ ...s, _idx: i });
     });
-
-    let html = `
-        <div style="margin-bottom:1rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
-            <div>
-                <span style="font-weight:600; color:var(--gray-700);">Total Services: ${servicePrices.length}</span>
-                <span style="font-size:0.8rem; color:var(--gray-500); margin-left:0.5rem;">
-                    ${isSupabaseConnected ? '✅ Connected to database' : '📄 Offline Mode'}
-                </span>
-            </div>
-            <div>
-                <button class="btn btn-sm btn-outline" onclick="loadServicePrices()">
-                    <i class="fas fa-sync"></i> Refresh
-                </button>
+    c.innerHTML = Object.entries(grouped).map(([cat, items]) => `
+        <div class="price-category">
+            <div class="price-category-header">${cat} <span class="count">${items.length}</span></div>
+            <div class="price-table-wrap">
+                <table class="price-table">
+                    <thead><tr><th>Service</th><th>Size</th><th>Price</th></tr></thead>
+                    <tbody>
+                        ${items.map(it => `<tr>
+                            <td data-label="Service">${it.service_name}</td>
+                            <td data-label="Size">${it.size_category}</td>
+                            <td data-label="Price"><input type="number" class="price-input" data-idx="${it._idx}" value="${it.price}" onchange="markPriceChanged(${it._idx}, this.value)"></td>
+                        </tr>`).join('')}
+                    </tbody>
+                </table>
             </div>
         </div>
-    `;
-
-    Object.keys(categories).sort().forEach(category => {
-        const prices = categories[category];
-        html += `
-            <div class="price-category">
-                <div class="price-category-header">
-                    <span>${category}</span>
-                    <span class="count">${prices.length} services</span>
-                </div>
-                <div class="price-table-wrap">
-                    <table class="price-table">
-                        <thead>
-                            <tr>
-                                <th>Service Name</th>
-                                <th>Size</th>
-                                <th style="text-align:right;">Price (₱)</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-        `;
-        
-        prices.forEach((p) => {
-            const uniqueId = `${p.service_category}-${p.service_name}-${p.size_category}`;
-            const isChanged = changedPrices.has(uniqueId);
-            html += `
-                <tr>
-                    <td><strong>${p.service_name}</strong></td>
-                    <td>${p.size_category}</td>
-                    <td style="text-align:right;">
-                        <input type="number" class="price-input ${isChanged ? 'changed' : ''}" 
-                               id="price_${uniqueId.replace(/[^a-zA-Z0-9]/g, '_')}" 
-                               value="${p.price}" 
-                               step="5" min="0"
-                               onchange="markPriceChanged('${uniqueId}', this.value)"
-                               onfocus="this.select()"
-                               title="Click to edit price">
-                        ${isChanged ? '<span style="color:var(--warning);font-size:0.65rem;margin-left:0.3rem;">⬆️ modified</span>' : ''}
-                    </td>
-                </tr>
-            `;
-        });
-        
-        html += `
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        `;
-    });
-
-    html += `
-        <div style="margin-top:1rem; text-align:center; padding:0.5rem; background:var(--gray-50); border-radius:8px; font-size:0.8rem; color:var(--gray-500);">
-            <i class="fas fa-info-circle"></i> 
-            ${changedPrices.size > 0 ? `You have ${changedPrices.size} unsaved changes. Click "Save All Changes" to update the database.` : 'All prices are saved in the database.'}
-        </div>
-    `;
-
-    container.innerHTML = html;
-    const priceCount = document.getElementById('priceCount');
-    if (priceCount) priceCount.textContent = servicePrices.length;
+    `).join('');
 }
 
-function markPriceChanged(uniqueId, value) {
-    const price = parseFloat(value);
-    if (isNaN(price) || price < 0) return;
-    
-    const original = servicePrices.find(p => 
-        `${p.service_category}-${p.service_name}-${p.size_category}` === uniqueId
-    );
-    if (!original) return;
+function markPriceChanged(i, v) {
+    servicePrices[i].price = parseFloat(v) || 0;
+    changedPrices.add(i);
+    const input = document.querySelector(`.price-input[data-idx="${i}"]`);
+    if (input) input.classList.add('changed');
+}
 
-    const inputId = `price_${uniqueId.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    const input = document.getElementById(inputId);
-    
-    if (Math.abs(original.price - price) > 0.01) {
-        changedPrices.add(uniqueId);
-        if (input) input.className = 'price-input changed';
-        const statusDiv = document.querySelector('.price-settings-container > div:last-child');
-        if (statusDiv) {
-            statusDiv.innerHTML = `
-                <i class="fas fa-info-circle"></i> 
-                You have ${changedPrices.size} unsaved changes. Click "Save All Changes" to update the database.
-            `;
-        }
-    } else {
-        changedPrices.delete(uniqueId);
-        if (input) input.className = 'price-input saved';
-        setTimeout(() => {
-            if (input) input.className = 'price-input';
-        }, 1000);
-        const statusDiv = document.querySelector('.price-settings-container > div:last-child');
-        if (statusDiv) {
-            if (changedPrices.size > 0) {
-                statusDiv.innerHTML = `
-                    <i class="fas fa-info-circle"></i> 
-                    You have ${changedPrices.size} unsaved changes. Click "Save All Changes" to update the database.
-                `;
-            } else {
-                statusDiv.innerHTML = `
-                    <i class="fas fa-check-circle" style="color:var(--success);"></i> 
-                    All prices are saved in the database.
-                `;
+async function saveAllPrices() {
+    if (changedPrices.size === 0) { showNotification('No changes', 'info'); return; }
+    const ok = await showConfirm({
+        icon: '💾', title: 'Save Price Changes',
+        message: `Save ${changedPrices.size} price change(s)?`,
+        details: { transaction: `${changedPrices.size} prices`, amount: '—', status: 'SAVE' },
+        buttonClass: 'btn-success', buttonText: '<i class="fas fa-save"></i> Save'
+    });
+    if (!ok) return;
+    try {
+        for (const i of changedPrices) {
+            const p = servicePrices[i];
+            if (supabaseClient && isSupabaseConnected) {
+                await supabaseClient.from(SERVICE_PRICES_TABLE).upsert({
+                    service_category: p.service_category, service_name: p.service_name,
+                    size_category: p.size_category, price: p.price
+                }, { onConflict: 'service_name,size_category' });
             }
         }
-    }
+        const n = changedPrices.size;
+        changedPrices.clear();
+        document.querySelectorAll('.price-input').forEach(i => { i.classList.remove('changed'); i.classList.add('saved'); });
+        await logAudit('PRICE_UPDATE', 'Prices updated', { count: n });
+        showNotification('Prices saved', 'success');
+        populateServiceDropdowns();
+    } catch (err) { showNotification('Failed: ' + err.message, 'error'); }
 }
 
-// ============================================================
-// SUMMARY DATA
-// ============================================================
-async function saveSummaryData() {
-    if (!supabaseClient || !isSupabaseConnected) {
-        console.warn('Supabase not connected, skipping save');
-        return;
-    }
-    
-    try {
-        await supabaseClient.from(STORE_SUMMARY_TABLE).insert({
-            cigarettes: storeData.cigarettes || 0,
-            snacks: storeData.snacks || 0,
-            drinks_water: storeData.drinksWater || 0,
-            drinks_soda: storeData.drinksSoda || 0,
-            drinks_coffee: storeData.drinksCoffee || 0,
-            drinks_juice: storeData.drinksJuice || 0,
-            drinks_energy: storeData.drinksEnergy || 0,
-            paluto_noodles: storeData.palutoNoodles || 0,
-            paluto_rice: storeData.palutoRice || 0,
-            paluto_soup: storeData.palutoSoup || 0,
-            paluto_silog: storeData.palutoSilog || 0,
-            paluto_appetizer: storeData.palutoAppetizer || 0,
-            other_sales: storeData.otherSales || 0,
-            gcash_cw: storeData.gcashCw || 0,
-            gcash_foods: storeData.gcashFoods || 0,
-            expenses: storeData.expenses || 0
-        });
-        console.log('✅ Store summary saved to database');
-    } catch (err) {
-        console.error('Error saving store summary:', err);
-        throw err;
-    }
+function openAddServiceModal() {
+    document.getElementById('addServiceForm').reset();
+    document.getElementById('newServiceCategoryCustom').style.display = 'none';
+    document.getElementById('addServiceModal').classList.add('active');
+}
+function closeAddServiceModal() { document.getElementById('addServiceModal')?.classList.remove('active'); }
+function handleCategoryChange() {
+    const cat = document.getElementById('newServiceCategory').value;
+    const custom = document.getElementById('newServiceCategoryCustom');
+    if (custom) custom.style.display = cat === 'Other' ? 'block' : 'none';
 }
 
-async function loadSummaryData() {
-    if (!supabaseClient || !isSupabaseConnected) {
-        console.log('📄 Using local store data (offline mode)');
-        return;
-    }
-    
-    try {
-        const { data, error } = await supabaseClient
-            .from(STORE_SUMMARY_TABLE)
-            .select('*')
-            .order('id', { ascending: false })
-            .limit(1);
-            
-        if (!error && data && data.length > 0) {
-            const s = data[0];
-            storeData = {
-                cigarettes: parseFloat(s.cigarettes) || 0,
-                snacks: parseFloat(s.snacks) || 0,
-                drinksWater: parseFloat(s.drinks_water) || 0,
-                drinksSoda: parseFloat(s.drinks_soda) || 0,
-                drinksCoffee: parseFloat(s.drinks_coffee) || 0,
-                drinksJuice: parseFloat(s.drinks_juice) || 0,
-                drinksEnergy: parseFloat(s.drinks_energy) || 0,
-                palutoNoodles: parseFloat(s.paluto_noodles) || 0,
-                palutoRice: parseFloat(s.paluto_rice) || 0,
-                palutoSoup: parseFloat(s.paluto_soup) || 0,
-                palutoSilog: parseFloat(s.paluto_silog) || 0,
-                palutoAppetizer: parseFloat(s.paluto_appetizer) || 0,
-                otherSales: parseFloat(s.other_sales) || 0,
-                gcashCw: parseFloat(s.gcash_cw) || 0,
-                gcashFoods: parseFloat(s.gcash_foods) || 0,
-                expenses: parseFloat(s.expenses) || 0
-            };
-            console.log('✅ Loaded store data from database');
-            renderStoreInputs();
-            renderStoreTotals();
-        } else {
-            console.log('📄 No store data in database, using defaults');
-        }
-    } catch (err) {
-        console.warn('Could not load store summary:', err);
-    }
-}
-
-// ============================================================
-// GET PAYMENT CLASS
-// ============================================================
-function getPaymentClass(payment) {
-    if (!payment) return 'mod-other';
-    const p = payment.toUpperCase();
-    if (p.includes('CASH')) return 'mod-cash';
-    if (p.includes('GCASH')) return 'mod-gcash';
-    if (p.includes('BANK') || p.includes('MARI')) return 'mod-bank';
-    if (p.includes('FREE')) return 'mod-free';
-    return 'mod-other';
-}
-
-// ============================================================
-// NOTIFICATION SYSTEM
-// ============================================================
-function showNotification(message, type = 'info', duration = 4000) {
-    const container = document.getElementById('notificationContainer');
-    if (!container) {
-        console.log(`${type.toUpperCase()}: ${message}`);
-        return;
-    }
-
-    const config = {
-        success: { icon: '✅', title: 'Success', className: 'notification-success' },
-        error: { icon: '❌', title: 'Error', className: 'notification-error' },
-        warning: { icon: '⚠️', title: 'Warning', className: 'notification-warning' },
-        info: { icon: 'ℹ️', title: 'Info', className: 'notification-info' }
-    };
-    const cfg = config[type] || config.info;
-
-    const notification = document.createElement('div');
-    notification.className = `notification ${cfg.className}`;
-    notification.innerHTML = `
-        <span class="notif-icon">${cfg.icon}</span>
-        <div class="notif-content">
-            <div class="notif-title">${cfg.title}</div>
-            <div class="notif-message">${message}</div>
-        </div>
-        <button class="notif-close" onclick="this.closest('.notification').remove()">×</button>
-        <div class="notif-progress"></div>
-    `;
-    container.appendChild(notification);
-
-    const timeout = setTimeout(() => {
-        if (notification.parentNode) {
-            notification.classList.add('notification-exit');
-            setTimeout(() => { if (notification.parentNode) notification.remove(); }, 400);
-        }
-    }, duration);
-
-    notification.addEventListener('click', function(e) {
-        if (e.target.closest('.notif-close')) return;
-        clearTimeout(timeout);
-        this.classList.add('notification-exit');
-        setTimeout(() => { if (this.parentNode) this.remove(); }, 400);
+async function saveNewService(e) {
+    e.preventDefault();
+    let category = document.getElementById('newServiceCategory').value;
+    if (category === 'Other') category = document.getElementById('newServiceCategoryCustom').value.trim() || 'Other';
+    const name = document.getElementById('newServiceName').value.trim();
+    const size = document.getElementById('newServiceSize').value;
+    const price = parseFloat(document.getElementById('newServicePrice').value);
+    const allSizes = document.getElementById('addMultipleSizes').checked;
+    if (!category || !name || !size || isNaN(price)) { showNotification('Fill all fields', 'warning'); return; }
+    const ok = await showConfirm({
+        icon: '💾', title: 'Add Service',
+        message: `Add "${name}" ${allSizes ? '(all sizes)' : `(${size})`} for ${formatPrice(price)}?`,
+        details: { transaction: name, amount: formatPrice(price), status: category.toUpperCase() },
+        buttonClass: 'btn-success', buttonText: '<i class="fas fa-check"></i> Add'
     });
-}
-
-// ============================================================
-// LOADING STATES
-// ============================================================
-function showLoadingState(show, message) {
-    const loading = document.getElementById('loadingState');
-    const spinner = document.getElementById('loadingSpinner');
-    if (show) {
-        isLoading = true;
-        if (spinner) { 
-            spinner.style.display = 'flex'; 
-            spinner.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${message || 'Loading...'}`; 
+    if (!ok) return;
+    const sizes = allSizes ? ['Small', 'Medium', 'Large', 'XLarge', 'XXLarge'] : [size];
+    for (const s of sizes) {
+        const entry = { service_category: category, service_name: name, size_category: s, price };
+        servicePrices.push(entry);
+        if (supabaseClient && isSupabaseConnected) {
+            try { await supabaseClient.from(SERVICE_PRICES_TABLE).insert(entry); } catch (e) { console.warn(e); }
         }
-        if (loading) { 
-            loading.style.display = 'block'; 
-            loading.innerHTML = `<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> ${message || 'Loading...'}</div>`; 
+    }
+    closeAddServiceModal();
+    renderPriceSettings();
+    populateServiceDropdowns();
+    showNotification('Service added', 'success');
+}
+
+// ============================================================
+// AUDIT
+// ============================================================
+async function loadAuditLogs() {
+    try {
+        if (supabaseClient && isSupabaseConnected) {
+            const { data } = await supabaseClient.from(AUDIT_TABLE).select('*').order('created_at', { ascending: false }).limit(500);
+            if (data) auditLogs = data;
+        } else {
+            const s = localStorage.getItem('carwash_audit');
+            auditLogs = s ? JSON.parse(s) : [];
         }
-    } else {
-        isLoading = false;
-        if (spinner) spinner.style.display = 'none';
-        if (loading) loading.style.display = 'none';
-    }
+    } catch (e) { auditLogs = []; }
+    filteredAuditLogs = [...auditLogs];
+    renderAuditLogs();
 }
 
-function showErrorState(message) {
-    const loading = document.getElementById('loadingState');
-    if (loading) {
-        loading.style.display = 'block';
-        loading.innerHTML = `
-            <div class="empty-state">
-                <i class="fas fa-exclamation-circle" style="font-size:2rem;color:#dc2626;margin-bottom:1rem;display:block;"></i>
-                <h3 style="color:#dc2626;">Error</h3>
-                <p style="color:#64748b;">${message}</p>
-                <button class="btn btn-primary" onclick="refreshData()" style="margin-top:1rem;"><i class="fas fa-sync"></i> Retry</button>
-            </div>
-        `;
+async function logAudit(action, description, details) {
+    const entry = {
+        action, description, details: details || {},
+        username: currentUser?.username || 'system',
+        user_name: currentUser?.name || 'System',
+        created_at: new Date().toISOString()
+    };
+    auditLogs.unshift(entry);
+    try { localStorage.setItem('carwash_audit', JSON.stringify(auditLogs.slice(0, 500))); } catch (e) { }
+    if (supabaseClient && isSupabaseConnected) {
+        try { await supabaseClient.from(AUDIT_TABLE).insert(entry); } catch (e) { console.warn(e); }
     }
-}
-
-// ============================================================
-// REFRESH DATA
-// ============================================================
-async function refreshData() {
-    showNotification('Refreshing data...', 'info');
-    await loadData();
-    await loadServicePrices();
-    await loadAuditLogs();
-    await loadSummaryData();
-    renderStoreTotals();
-    updateStoreHistory();
     updateAuditBadge();
-    showNotification('Data refreshed successfully', 'success');
+    renderAuditLogs();
 }
 
+function renderAuditLogs() {
+    const tb = document.getElementById('auditBody');
+    if (!tb) return;
+    if (filteredAuditLogs.length === 0) { tb.innerHTML = '<tr><td colspan="6" class="empty-state" data-label="">No audit logs</td></tr>'; return; }
+    tb.innerHTML = '';
+    filteredAuditLogs.slice(0, 100).forEach((row, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td data-label="#">${i + 1}</td>
+            <td data-label="Date">${new Date(row.created_at).toLocaleString()}</td>
+            <td data-label="Action"><span class="badge badge-${(row.action || '').toLowerCase()}">${row.action}</span></td>
+            <td data-label="User">${row.user_name || row.username || '—'}</td>
+            <td data-label="Description">${row.description || '—'}</td>
+            <td data-label="Details">${JSON.stringify(row.details || {})}</td>
+        `;
+        tb.appendChild(tr);
+    });
+    enhanceTablesForMobile();
+}
+
+function updateAuditBadge() {
+    const el = document.getElementById('auditBadge');
+    if (el) el.textContent = auditLogs.length;
+}
+
+function filterAudit() {
+    const q = (document.getElementById('auditSearch')?.value || '').toLowerCase();
+    const a = document.getElementById('auditActionFilter')?.value || '';
+    filteredAuditLogs = auditLogs.filter(r => {
+        if (a && r.action !== a) return false;
+        if (q && ![r.description, r.user_name, r.username, JSON.stringify(r.details || {})].join(' ').toLowerCase().includes(q)) return false;
+        return true;
+    });
+    renderAuditLogs();
+}
+
+function refreshAudit() { loadAuditLogs().then(() => showNotification('Refreshed', 'info')); }
+function exportAuditLogs() { exportRows(auditLogs, 'audit_logs'); }
+function closeAuditDetail() { document.getElementById('auditDetailModal')?.classList.remove('active'); }
+
 // ============================================================
-// BACKUP FUNCTIONS
+// BACKUP
 // ============================================================
 function loadBackupHistory() {
     try {
-        const history = localStorage.getItem(BACKUP_HISTORY_KEY);
-        if (history) {
-            backupHistory = JSON.parse(history);
-            renderBackupHistory();
-        }
-    } catch (err) {
-        console.warn('Could not load backup history:', err);
-    }
-}
-
-function saveBackupHistory() {
-    try {
-        localStorage.setItem(BACKUP_HISTORY_KEY, JSON.stringify(backupHistory));
-    } catch (err) {
-        console.warn('Could not save backup history:', err);
-    }
-}
-
-function renderBackupHistory() {
-    const container = document.getElementById('backupHistoryContainer');
-    if (!container) return;
-
-    if (!backupHistory || backupHistory.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state" style="padding:1rem;">
-                <i class="fas fa-inbox" style="font-size:1.5rem; color:var(--gray-300);"></i>
-                <p style="color:var(--gray-400);">No backups created in this session.</p>
-            </div>
-        `;
-        return;
-    }
-
-    let html = '<div style="max-height:300px; overflow-y:auto;">';
-    backupHistory.slice().reverse().forEach((backup, index) => {
-        const date = new Date(backup.created_at);
-        const size = (backup.size / 1024).toFixed(1);
-        html += `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:0.5rem 0.75rem; border-bottom:1px solid var(--gray-100);">
-                <div>
-                    <div style="font-weight:600; color:var(--gray-700);">
-                        <i class="fas fa-file-archive" style="color:var(--primary);"></i>
-                        ${backup.filename}
-                    </div>
-                    <div style="font-size:0.7rem; color:var(--gray-500);">
-                        ${date.toLocaleString()} • ${size} KB • ${backup.record_count || 0} records
-                    </div>
-                </div>
-                <div style="display:flex; gap:0.3rem;">
-                    <button class="btn btn-sm btn-outline" onclick="downloadBackupFile('${backup.filename}')" title="Download">
-                        <i class="fas fa-download"></i>
-                    </button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteBackup('${backup.filename}')" title="Delete">
-                        <i class="fas fa-trash"></i>
-                    </button>
-                </div>
-            </div>
-        `;
-    });
-    html += '</div>';
-    container.innerHTML = html;
-}
-
-function startAutoBackup() {
-    const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(0, 0, 0, 0);
-    const msUntilMidnight = tomorrow.getTime() - now.getTime();
-    
-    const todayStr = now.toISOString().split('T')[0];
-    const todayBackup = backupHistory.find(b => b.filename.includes(todayStr));
-    
-    if (!todayBackup && isAdmin(currentUser)) {
-        if (autoBackupTimer) clearTimeout(autoBackupTimer);
-        autoBackupTimer = setTimeout(() => {
-            performAutoBackup();
-        }, msUntilMidnight + 60000);
-        console.log('⏰ Auto-backup scheduled for midnight');
-    }
-}
-
-function stopAutoBackup() {
-    if (autoBackupTimer) {
-        clearTimeout(autoBackupTimer);
-        autoBackupTimer = null;
-    }
-}
-
-async function performAutoBackup() {
-    if (!isAdmin(currentUser)) return;
-    
-    try {
-        const data = await gatherBackupData();
-        const filename = `backup_${new Date().toISOString().split('T')[0]}_auto.json`;
-        const backupData = {
-            version: '1.0',
-            created_at: new Date().toISOString(),
-            type: 'auto',
-            data: data
-        };
-        
-        const json = JSON.stringify(backupData, null, 2);
-        const blob = new Blob([json], { type: 'application/json' });
-        
-        const backupEntry = {
-            filename: filename,
-            created_at: new Date().toISOString(),
-            size: blob.size,
-            record_count: data.transactions?.length || 0
-        };
-        backupHistory.push(backupEntry);
-        saveBackupHistory();
-        renderBackupHistory();
-        
-        await logAudit('BACKUP', `Auto backup created: ${filename}`, {
-            filename: filename,
-            record_count: data.transactions?.length || 0,
-            type: 'auto'
-        });
-        
-        showNotification(`Auto backup created successfully: ${filename}`, 'success');
-        startAutoBackup();
-    } catch (err) {
-        console.error('Auto backup error:', err);
-        showNotification('Auto backup failed: ' + err.message, 'error');
-    }
-}
-
-async function gatherBackupData() {
-    let transactionsData = transactions;
-    let salaryDataLocal = salaryData;
-    let servicePricesData = servicePrices;
-    let storeDataLocal = storeData;
-    
-    if (supabaseClient && isSupabaseConnected) {
-        try {
-            const { data: txData } = await supabaseClient.from(TABLE_NAME).select('*');
-            if (txData) transactionsData = txData;
-            
-            const { data: salData } = await supabaseClient.from(SALARY_TABLE).select('*');
-            if (salData) salaryDataLocal = salData;
-            
-            const { data: priceData } = await supabaseClient.from(SERVICE_PRICES_TABLE).select('*');
-            if (priceData) servicePricesData = priceData;
-        } catch (err) {
-            console.warn('Could not fetch fresh data for backup:', err);
-        }
-    }
-    
-    return {
-        transactions: transactionsData,
-        salaries: salaryDataLocal,
-        service_prices: servicePricesData,
-        store_data: storeDataLocal,
-        exported_at: new Date().toISOString(),
-        total_transactions: transactionsData.length
-    };
+        const s = localStorage.getItem(BACKUP_HISTORY_KEY);
+        backupHistory = s ? JSON.parse(s) : [];
+    } catch (e) { backupHistory = []; }
 }
 
 async function createBackup() {
-    if (!checkPermission('backup')) return;
-    
-    try {
-        showNotification('Creating backup...', 'info');
-        
-        const data = await gatherBackupData();
-        const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
-        const filename = `backup_${dateStr}.json`;
-        
-        const backupData = {
-            version: '1.0',
-            created_at: new Date().toISOString(),
-            type: 'manual',
-            data: data
-        };
-        
-        const json = JSON.stringify(backupData, null, 2);
-        const blob = new Blob([json], { type: 'application/json' });
-        
-        const backupEntry = {
-            filename: filename,
-            created_at: new Date().toISOString(),
-            size: blob.size,
-            record_count: data.transactions?.length || 0
-        };
-        backupHistory.push(backupEntry);
-        saveBackupHistory();
-        renderBackupHistory();
-        
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
-        
-        await logAudit('BACKUP', `Manual backup created: ${filename}`, {
-            filename: filename,
-            record_count: data.transactions?.length || 0,
-            type: 'manual'
-        });
-        
-        showNotification(`Backup created successfully: ${filename}`, 'success');
-    } catch (err) {
-        console.error('Backup error:', err);
-        showNotification('Backup failed: ' + err.message, 'error');
-    }
-}
-
-function downloadBackupFile(filename) {
-    const backup = backupHistory.find(b => b.filename === filename);
-    if (!backup) {
-        showNotification('Backup file not found in history', 'error');
-        return;
-    }
-    
-    try {
-        const stored = localStorage.getItem(`backup_${filename}`);
-        if (stored) {
-            const blob = new Blob([stored], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            setTimeout(() => URL.revokeObjectURL(url), 10000);
-            showNotification('Downloading backup file...', 'info');
-            return;
-        }
-    } catch (err) {
-        console.warn('Could not retrieve backup from storage:', err);
-    }
-    
-    showNotification('Backup file not found. Please create a new backup.', 'warning');
-}
-
-function deleteBackup(filename) {
-    if (!confirm(`Are you sure you want to delete backup: ${filename}?`)) return;
-    
-    backupHistory = backupHistory.filter(b => b.filename !== filename);
-    saveBackupHistory();
+    const ok = await showConfirm({
+        icon: '💾', title: 'Create Backup',
+        message: 'Download full backup?',
+        details: { transaction: `${transactions.length} transactions`, amount: '—', status: 'BACKUP' },
+        buttonClass: 'btn-primary', buttonText: '<i class="fas fa-database"></i> Backup'
+    });
+    if (!ok) return;
+    const payload = {
+        timestamp: new Date().toISOString(),
+        transactions, servicePrices, storeData, salaryData, auditLogs
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `carwash_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    backupHistory.unshift({ timestamp: new Date().toISOString(), size: json.length });
+    try { localStorage.setItem(BACKUP_HISTORY_KEY, JSON.stringify(backupHistory.slice(0, 10))); } catch (e) { }
     renderBackupHistory();
-    showNotification('Backup deleted successfully', 'success');
+    await logAudit('BACKUP', 'Backup created', { size: json.length });
+    showNotification('Backup downloaded', 'success');
 }
 
 async function restoreFromBackup() {
-    if (!checkPermission('restore')) return;
-    
-    const fileInput = document.getElementById('restoreFileInput');
-    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
-        showNotification('Please select a backup file to restore', 'warning');
-        return;
-    }
-    
-    const file = fileInput.files[0];
-    if (!file.name.endsWith('.json')) {
-        showNotification('Please select a valid JSON backup file', 'error');
-        return;
-    }
-    
-    const confirmed = await showConfirm({
-        icon: '⚠️', iconColor: '#dc2626', title: 'Restore Database',
-        message: 'This will REPLACE ALL current data with the data from the backup file.',
-        details: {
-            transaction: `<strong>${file.name}</strong>`,
-            amount: 'All current data will be overwritten',
-            status: '⚠️ IRREVERSIBLE ACTION'
-        },
-        buttonClass: 'btn-danger', buttonText: '<i class="fas fa-upload"></i> Restore Now'
+    const input = document.getElementById('restoreFileInput');
+    if (!input || !input.files[0]) { showNotification('Choose a file', 'warning'); return; }
+    const ok = await showConfirm({
+        icon: '⚠️', title: 'Restore Backup',
+        message: 'Restoring will OVERWRITE all data. Continue?',
+        details: { transaction: input.files[0].name, amount: '—', status: 'RESTORE' },
+        buttonClass: 'btn-danger', buttonText: '<i class="fas fa-upload"></i> Restore'
     });
-    
-    if (!confirmed) return;
-    
-    try {
-        const text = await file.text();
-        const backupData = JSON.parse(text);
-        
-        if (!backupData.version || !backupData.data) {
-            showNotification('Invalid backup file format', 'error');
-            return;
-        }
-        
-        const data = backupData.data;
-        
-        if (data.transactions && data.transactions.length > 0) {
-            if (supabaseClient && isSupabaseConnected) {
-                await supabaseClient.from(TABLE_NAME).delete().neq('id', 0);
+    if (!ok) return;
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        try {
+            const data = JSON.parse(e.target.result);
+            if (data.transactions) transactions = data.transactions;
+            if (data.servicePrices) servicePrices = data.servicePrices;
+            if (data.storeData) Object.assign(storeData, data.storeData);
+            if (data.salaryData) salaryData = data.salaryData;
+            if (data.auditLogs) auditLogs = data.auditLogs;
+            if (supabaseClient && isSupabaseConnected && data.transactions) {
                 for (const tx of data.transactions) {
-                    const { id, ...txWithoutId } = tx;
-                    await supabaseClient.from(TABLE_NAME).insert(txWithoutId);
+                    try { await supabaseClient.from(TABLE_NAME).upsert(tx); } catch (e) { }
                 }
-                console.log(`✅ Restored ${data.transactions.length} transactions`);
             }
-            transactions = data.transactions;
-        }
-        
-        if (data.salaries && data.salaries.length > 0) {
-            if (supabaseClient && isSupabaseConnected) {
-                await supabaseClient.from(SALARY_TABLE).delete().neq('id', 0);
-                for (const sal of data.salaries) {
-                    const { id, ...salWithoutId } = sal;
-                    await supabaseClient.from(SALARY_TABLE).insert(salWithoutId);
-                }
-                console.log(`✅ Restored ${data.salaries.length} salaries`);
-            }
-            salaryData = data.salaries;
-        }
-        
-        if (data.service_prices && data.service_prices.length > 0) {
-            if (supabaseClient && isSupabaseConnected) {
-                await supabaseClient.from(SERVICE_PRICES_TABLE).delete().neq('id', 0);
-                for (const price of data.service_prices) {
-                    const { id, ...priceWithoutId } = price;
-                    await supabaseClient.from(SERVICE_PRICES_TABLE).insert(priceWithoutId);
-                }
-                console.log(`✅ Restored ${data.service_prices.length} service prices`);
-            }
-            servicePrices = data.service_prices;
-        }
-        
-        if (data.store_data) {
-            storeData = data.store_data;
-            renderStoreInputs();
-        }
-        
-        await logAudit('RESTORE', `Database restored from backup: ${file.name}`, {
-            filename: file.name,
-            restored_records: {
-                transactions: data.transactions?.length || 0,
-                salaries: data.salaries?.length || 0,
-                service_prices: data.service_prices?.length || 0
-            }
-        });
-        
-        populateFilters();
-        applyFilters();
-        renderAll();
-        renderSalaryTable();
-        renderPriceSettings();
-        showNotification(`✅ Database restored successfully from ${file.name}`, 'success');
-        
-        fileInput.value = '';
-    } catch (err) {
-        console.error('Restore error:', err);
-        showNotification('Restore failed: ' + err.message, 'error');
-    }
-}
-
-// ============================================================
-// MODAL CONTROLS
-// ============================================================
-function openModal() {
-    const modal = document.getElementById('transactionModal');
-    if (modal) modal.classList.add('active');
-}
-
-function closeModal() {
-    const modal = document.getElementById('transactionModal');
-    if (modal) modal.classList.remove('active');
-}
-
-function openQuickAdd() {
-    if (!checkPermission('add')) return;
-    const form = document.getElementById('quickAddForm');
-    if (form) form.reset();
-    const modal = document.getElementById('quickAddModal');
-    if (modal) modal.classList.add('active');
-}
-
-function closeQuickAdd() {
-    const modal = document.getElementById('quickAddModal');
-    if (modal) modal.classList.remove('active');
-}
-
-async function saveQuickAdd(e) {
-    e.preventDefault();
-    if (!checkPermission('add')) return;
-
-    const category = document.getElementById('quickCategory').value;
-    const item = document.getElementById('quickItem').value.trim();
-    const amount = parseFloat(document.getElementById('quickAmount').value) || 0;
-    const payment = document.getElementById('quickPayment').value;
-    const paymentStatus = document.getElementById('quickPaymentStatus').value;
-    const carwasher = document.getElementById('quickCarwasher').value.trim();
-    const remarks = document.getElementById('quickRemarks').value.trim();
-
-    if (!item) {
-        showNotification('Please enter an Item/Service name', 'error');
-        document.getElementById('quickItem').focus();
-        return;
-    }
-    
-    if (amount <= 0) {
-        showNotification('Please enter a valid Amount', 'error');
-        document.getElementById('quickAmount').focus();
-        return;
-    }
-
-    const now = new Date().toISOString();
-    let transaction = {
-        category, payment, payment_status: paymentStatus, remarks,
-        total: amount, unit_price: amount, quantity: 1,
-        created_at: now, updated_at: now,
-        store_order: [], selected_services: []
+            applyFilters();
+            renderAll();
+            renderStoreTotals();
+            renderAuditLogs();
+            showNotification('Backup restored', 'success');
+        } catch (err) { showNotification('Failed: ' + err.message, 'error'); }
     };
+    reader.readAsText(input.files[0]);
+}
 
-    if (category === 'carwash') {
-        transaction.car_model = item;
-        transaction.services = 'CARWASH';
-        transaction.carwasher = carwasher || 'UNASSIGNED';
-        transaction.carwash_price = amount;
-        transaction.detailing_price = 0;
-        transaction.item = `${item} - CARWASH`;
-        transaction.other = '';
-        transaction.detailer = '';
-        transaction.unit_price = amount;
-    } else {
-        transaction.item = item;
-        transaction.quantity = 1;
-        transaction.unit_price = amount;
-        transaction.car_model = '';
-        transaction.services = '';
+function renderBackupHistory() {
+    const c = document.getElementById('backupHistoryContainer');
+    if (!c) return;
+    if (backupHistory.length === 0) {
+        c.innerHTML = `<div class="empty-state" style="padding:1rem;">
+            <i class="fas fa-inbox" style="font-size:1.5rem; color:var(--gray-300);"></i>
+            <p style="color:var(--gray-400);">No backups created in this session.</p>
+        </div>`;
+        return;
     }
+    c.innerHTML = backupHistory.map(b => `
+        <div style="display:flex;justify-content:space-between;padding:0.5rem;border-bottom:1px solid var(--gray-200);">
+            <span>${new Date(b.timestamp).toLocaleString()}</span>
+            <span style="color:var(--gray-500);">${(b.size / 1024).toFixed(1)} KB</span>
+        </div>
+    `).join('');
+}
 
-    try {
-        let savedTransaction = null;
-        
-        if (supabaseClient && isSupabaseConnected) {
-            const { data, error } = await supabaseClient
-                .from(TABLE_NAME)
-                .insert(transaction)
-                .select();
-            if (!error && data && data.length > 0) {
-                savedTransaction = data[0];
-                transactions.unshift(savedTransaction);
-                await logAudit('ADD', `Quick transaction #${savedTransaction.id} added`, {
-                    transaction_id: savedTransaction.id,
-                    category: savedTransaction.category,
-                    item: savedTransaction.item || savedTransaction.car_model,
-                    amount: savedTransaction.total
-                });
-            } else {
-                showNotification('Error adding transaction to database', 'error');
-                return;
-            }
-        } else {
-            transaction.id = Date.now();
-            transactions.unshift(transaction);
-            await logAudit('ADD', `Quick transaction #${transaction.id} added (offline)`, {
-                transaction_id: transaction.id,
-                category: transaction.category,
-                item: transaction.item || transaction.car_model,
-                amount: transaction.total
-            });
-        }
-        closeQuickAdd();
-        populateFilters();
-        applyFilters();
-        renderAll();
-        renderSalaryTable();
-        updateAuditBadge();
-        updateStoreHistory();
-        showNotification('Transaction added successfully', 'success');
-    } catch (err) {
-        console.error('Quick add error:', err);
-        showNotification('Error saving: ' + err.message, 'error');
+// ============================================================
+// TOUR
+// ============================================================
+let tourStep = 0;
+const tourSteps = [
+    { title: 'Welcome!', text: 'This is your carwash management system.' },
+    { title: 'Dashboard', text: 'See today\'s earnings, pending payments, and more.' },
+    { title: 'Transactions', text: 'All transactions with ongoing and completed tabs.' },
+    { title: 'Salary', text: 'Calculate carwasher salaries by date range.' },
+    { title: 'Store', text: 'Track store inventory and sales.' },
+    { title: 'Reports', text: 'Generate daily/weekly/monthly reports.' }
+];
+
+function checkFirstTimeTour() {
+    if (!localStorage.getItem('carwash_tour_done')) {
+        setTimeout(() => startTour(), 1200);
     }
 }
 
-// ============================================================
-// SELECTION
-// ============================================================
-function toggleRow(id) {
-    if (selectedIds.has(id)) selectedIds.delete(id);
-    else selectedIds.add(id);
-    updateSelectAllState();
+function startTour() {
+    tourStep = 0;
+    document.getElementById('tourOverlay').style.display = 'block';
+    showTourStep();
 }
 
-function toggleAllCheckboxes() {
-    const checked = document.getElementById('selectAll')?.checked || false;
-    const data = filteredTransactions.length > 0 ? filteredTransactions : transactions;
-    data.forEach(r => { if (checked) selectedIds.add(r.id); else selectedIds.delete(r.id); });
-    renderTable();
+function showTourStep() {
+    const s = tourSteps[tourStep];
+    if (!s) { endTour(); return; }
+    document.getElementById('tourStep').textContent = `Step ${tourStep + 1} of ${tourSteps.length}`;
+    document.getElementById('tourTitle').textContent = s.title;
+    document.getElementById('tourText').textContent = s.text;
+    const bar = document.getElementById('tourProgressBar');
+    if (bar) bar.style.width = ((tourStep + 1) / tourSteps.length * 100) + '%';
+    const prev = document.getElementById('tourPrevBtn');
+    if (prev) prev.disabled = tourStep === 0;
 }
 
-function updateSelectAllState() {
-    const data = filteredTransactions.length > 0 ? filteredTransactions : transactions;
-    const selectAll = document.getElementById('selectAll');
-    if (selectAll) {
-        selectAll.checked = data.length > 0 && data.every(r => selectedIds.has(r.id));
+function nextTourStep() { tourStep++; if (tourStep >= tourSteps.length) endTour(); else showTourStep(); }
+function prevTourStep() { if (tourStep > 0) { tourStep--; showTourStep(); } }
+function endTour() {
+    document.getElementById('tourOverlay').style.display = 'none';
+    localStorage.setItem('carwash_tour_done', '1');
+}
+
+// ============================================================
+// NOTIFICATIONS & CONFIRM
+// ============================================================
+function showNotification(message, type = 'info', duration = 4000, actions = null) {
+    const c = document.getElementById('notificationContainer');
+    if (!c) return;
+    const cfg = {
+        success: { icon: '✅', title: 'Success', cls: 'notification-success' },
+        error: { icon: '❌', title: 'Error', cls: 'notification-error' },
+        warning: { icon: '⚠️', title: 'Warning', cls: 'notification-warning' },
+        info: { icon: 'ℹ️', title: 'Info', cls: 'notification-info' }
+    }[type] || { icon: 'ℹ️', title: 'Info', cls: 'notification-info' };
+    const n = document.createElement('div');
+    n.className = `notification ${cfg.cls}`;
+    let aHTML = '';
+    if (actions && actions.length) {
+        aHTML = `<div style="display:flex;gap:0.5rem;margin-top:0.75rem;">` +
+            actions.map(a => `<button class="btn btn-sm" onclick="${a.onclick}" style="background:rgba(255,255,255,0.2);color:white;border:none;">${a.text}</button>`).join('') +
+            `</div>`;
     }
+    n.innerHTML = `
+        <span class="notif-icon">${cfg.icon}</span>
+        <div class="notif-content" style="flex:1;">
+            <div class="notif-title">${cfg.title}</div>
+            <div class="notif-message">${message}</div>
+            ${aHTML}
+        </div>
+        <button class="notif-close" onclick="this.closest('.notification').remove()">×</button>
+    `;
+    c.appendChild(n);
+    if (duration > 0) setTimeout(() => { if (n.parentNode) n.remove(); }, duration);
 }
 
-// ============================================================
-// CONFIRMATION SYSTEM
-// ============================================================
 let confirmResolve = null;
-
 function showConfirm(options) {
     return new Promise((resolve) => {
-        const modal = document.getElementById('confirmModal');
-        if (!modal) return resolve(false);
-        
-        const icon = document.getElementById('confirmIcon');
-        if (icon) {
-            icon.textContent = options.icon || '⚠️';
-            icon.style.color = options.iconColor || '#f59e0b';
+        const m = document.getElementById('confirmModal');
+        document.getElementById('confirmIcon').textContent = options.icon || '⚠️';
+        document.getElementById('confirmTitle').textContent = options.title || 'Confirm';
+        document.getElementById('confirmMessage').textContent = options.message || 'Proceed?';
+        if (options.details) {
+            document.getElementById('confirmTransaction').textContent = options.details.transaction || '—';
+            document.getElementById('confirmAmount').textContent = options.details.amount || '—';
+            document.getElementById('confirmStatus').textContent = options.details.status || '—';
         }
-        
-        const title = document.getElementById('confirmTitle');
-        if (title) title.textContent = options.title || 'Confirm Action';
-        
-        const message = document.getElementById('confirmMessage');
-        if (message) message.textContent = options.message || 'Are you sure?';
-        
-        const details = document.getElementById('confirmDetails');
-        if (details) {
-            if (options.details) {
-                details.style.display = 'block';
-                const tx = document.getElementById('confirmTransaction');
-                if (tx) tx.innerHTML = options.details.transaction || '—';
-                const amt = document.getElementById('confirmAmount');
-                if (amt) amt.textContent = options.details.amount || '—';
-                const st = document.getElementById('confirmStatus');
-                if (st) st.innerHTML = options.details.status || '—';
-            } else {
-                details.style.display = 'none';
-            }
-        }
-        
-        const confirmBtn = document.getElementById('confirmBtn');
-        if (confirmBtn) {
-            confirmBtn.className = `btn ${options.buttonClass || 'btn-danger'}`;
-            confirmBtn.innerHTML = options.buttonText || 'Confirm';
-        }
-        
-        confirmResolve = (result) => {
-            closeConfirm();
-            resolve(result);
-        };
-        
-        modal.classList.add('active');
+        const b = document.getElementById('confirmBtn');
+        b.className = `btn ${options.buttonClass || 'btn-danger'}`;
+        b.innerHTML = options.buttonText || 'Confirm';
+        confirmResolve = (res) => { closeConfirm(); resolve(res); };
+        m.classList.add('active');
     });
 }
-
-function closeConfirm() {
-    const modal = document.getElementById('confirmModal');
-    if (modal) modal.classList.remove('active');
-    confirmResolve = null;
-}
-
-function executeConfirm() {
-    if (confirmResolve) confirmResolve(true);
-}
+function closeConfirm() { document.getElementById('confirmModal')?.classList.remove('active'); confirmResolve = null; }
+function executeConfirm() { if (confirmResolve) confirmResolve(true); }
 
 // ============================================================
-// TRANSACTION DELETE & STATUS UPDATE
+// PERMISSIONS / NAVIGATION
 // ============================================================
-async function deleteTransaction(id) {
-    if (!checkPermission('delete')) return;
-    const row = transactions.find(r => r.id === id);
-    if (!row) {
-        showNotification('Transaction not found', 'error');
-        return;
+function checkPermission(action) {
+    if (!currentUser) return false;
+    const map = { 'add': 'canAddTransaction', 'edit': 'canEditTransaction', 'delete': 'canDeleteTransaction' };
+    const f = map[action];
+    if (f && typeof window[f] === 'function' && !window[f](currentUser)) {
+        showNotification(`No permission to ${action}`, 'warning');
+        return false;
     }
-
-    const confirmed = await showConfirm({
-        icon: '🗑️', iconColor: '#dc2626', title: 'Delete Transaction',
-        message: 'Are you sure you want to delete this transaction?',
-        details: {
-            transaction: `<strong>#${row.id}</strong> - ${row.item || row.car_model || 'Unknown'}`,
-            amount: formatPrice(row.total || 0),
-            status: row.payment_status || 'unpaid'
-        },
-        buttonClass: 'btn-danger', buttonText: '<i class="fas fa-trash"></i> Delete'
-    });
-    if (!confirmed) return;
-
-    try {
-        if (supabaseClient && isSupabaseConnected) {
-            const { error } = await supabaseClient
-                .from(TABLE_NAME)
-                .delete()
-                .eq('id', id);
-            if (error) {
-                console.error('Error deleting transaction:', error);
-                showNotification('Error deleting transaction from database', 'error');
-                return;
-            }
-        }
-        transactions = transactions.filter(r => r.id !== id);
-        selectedIds.delete(id);
-        await logAudit('DELETE', `Transaction #${id} deleted`, {
-            transaction_id: id,
-            category: row.category,
-            item: row.item || row.car_model,
-            amount: row.total
-        });
-        populateFilters();
-        applyFilters();
-        renderAll();
-        renderSalaryTable();
-        updateAuditBadge();
-        updateStoreHistory();
-        showNotification('Transaction deleted successfully', 'success');
-    } catch (err) {
-        console.error('Delete error:', err);
-        showNotification('Error deleting: ' + err.message, 'error');
-    }
+    return true;
 }
 
-async function deleteSelected() {
-    if (!checkPermission('delete')) return;
-    if (selectedIds.size === 0) {
-        showNotification('No transactions selected', 'info');
-        return;
-    }
-
-    const confirmed = await showConfirm({
-        icon: '🗑️', iconColor: '#dc2626', title: `Delete ${selectedIds.size} Transactions`,
-        message: `Are you sure you want to delete ${selectedIds.size} transactions?`,
-        details: {
-            transaction: `<strong>${selectedIds.size}</strong> transactions`,
-            amount: formatPrice(transactions.filter(r => selectedIds.has(r.id)).reduce((sum, r) => sum + parseFloat(r.total || 0), 0)),
-            status: 'BULK DELETE'
-        },
-        buttonClass: 'btn-danger', buttonText: `<i class="fas fa-trash"></i> Delete ${selectedIds.size}`
-    });
-    if (!confirmed) return;
-
-    try {
-        const deletedItems = [];
-        for (const id of selectedIds) {
-            const row = transactions.find(r => r.id === id);
-            if (row) {
-                deletedItems.push({ id, item: row.item || row.car_model, amount: row.total });
-                if (supabaseClient && isSupabaseConnected) {
-                    await supabaseClient.from(TABLE_NAME).delete().eq('id', id);
-                }
-            }
-            transactions = transactions.filter(r => r.id !== id);
-        }
-        const count = selectedIds.size;
-        selectedIds.clear();
-        await logAudit('DELETE', `Bulk delete: ${count} transactions`, {
-            count: count,
-            items: deletedItems
-        });
-        populateFilters();
-        applyFilters();
-        renderAll();
-        renderSalaryTable();
-        updateAuditBadge();
-        updateStoreHistory();
-        showNotification(`${count} transactions deleted successfully`, 'success');
-    } catch (err) {
-        console.error('Bulk delete error:', err);
-        showNotification('Error deleting: ' + err.message, 'error');
-    }
-}
-
-async function updatePaymentStatus(id, status) {
-    if (!checkPermission('change_status')) return;
-    const row = transactions.find(r => r.id === id);
-    if (!row) return;
-
-    const confirmed = await showConfirm({
-        icon: '💰', iconColor: '#2563eb', title: 'Update Payment Status',
-        message: 'Change payment status for this transaction?',
-        details: {
-            transaction: `<strong>#${row.id}</strong> - ${row.item || row.car_model || 'Unknown'}`,
-            amount: formatPrice(row.total || 0),
-            status: `<span style="color:${row.payment_status === 'paid' ? '#16a34a' : row.payment_status === 'partial' ? '#f59e0b' : '#dc2626'}">${(row.payment_status || 'unpaid').toUpperCase()}</span> → <span style="color:${status === 'paid' ? '#16a34a' : status === 'partial' ? '#f59e0b' : '#dc2626'}">${status.toUpperCase()}</span>`
-        },
-        buttonClass: 'btn-primary', buttonText: `<i class="fas fa-sync"></i> Update to ${status.toUpperCase()}`
-    });
-    if (!confirmed) return;
-
-    try {
-        const oldStatus = row.payment_status;
-        row.payment_status = status;
-        if (supabaseClient && isSupabaseConnected) {
-            const { error } = await supabaseClient
-                .from(TABLE_NAME)
-                .update({ payment_status: status })
-                .eq('id', id);
-            if (error) {
-                console.error('Error updating status:', error);
-                showNotification('Error updating status in database', 'error');
-                return;
-            }
-        }
-        await logAudit('STATUS_UPDATE', `Payment status changed for #${id}`, {
-            transaction_id: id,
-            old_status: oldStatus,
-            new_status: status,
-            transaction: row.item || row.car_model,
-            amount: row.total
-        });
-        renderTable();
-        updateAuditBadge();
-        updateStoreHistory();
-        showNotification(`Status updated to ${status.toUpperCase()}`, 'success');
-    } catch (err) {
-        console.error('Status update error:', err);
-        showNotification('Error updating status', 'error');
-    }
-}
-
-// ============================================================
-// SIDEBAR TOGGLE
-// ============================================================
-function toggleSidebar() {
-    const sidebar = document.getElementById('sidebar');
-    const overlay = document.getElementById('sidebarOverlay');
-    if (window.innerWidth <= 992) {
-        if (sidebar) sidebar.classList.toggle('open');
-        if (overlay) overlay.classList.toggle('active');
-    }
-}
-
-// ============================================================
-// PAGE SWITCHING
-// ============================================================
 function switchPage(page) {
-    const allowedPages = getUserPages(currentUser);
-    if (!allowedPages.includes(page)) {
-        showNotification('You don\'t have access to this page', 'warning');
+    if (page === 'ongoing') { switchPage('transactions'); setTimeout(() => switchTransactionTab('ongoing'), 100); return; }
+    document.querySelectorAll('.page-content').forEach(p => p.classList.remove('active'));
+    const t = document.getElementById(`page-${page}`);
+    if (t) t.classList.add('active');
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    const n = document.querySelector(`.nav-item[data-page="${page}"]`);
+    if (n) n.classList.add('active');
+    document.getElementById('pageTitle').textContent = page.charAt(0).toUpperCase() + page.slice(1);
+    if (page === 'transactions') { switchTransactionTab(currentTransactionTab || 'all'); updateTransactionTabCounts(); }
+    if (page === 'accessories') {
+    switchKioskMode('accessories');
+    renderAccessories(); // legacy table also refreshes
+}
+    if (page === 'store') {
+    switchKioskMode('store');
+    renderStoreTotals();
+    updateStoreHistory();
+}if (page === 'prices') renderPriceSettings();
+    if (page === 'audit') renderAuditLogs();
+    if (page === 'backup') renderBackupHistory();
+}
+
+function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('open');
+    document.getElementById('sidebarOverlay').classList.toggle('active');
+}
+
+function closeModal() { document.getElementById('transactionModal')?.classList.remove('active'); }
+function showLoadingState(show) {
+    const el = document.getElementById('loadingSpinner');
+    if (el) el.style.display = show ? 'flex' : 'none';
+    const ls = document.getElementById('loadingState');
+    if (ls) ls.style.display = show ? 'flex' : 'none';
+    const tt = document.getElementById('transactionsTable');
+    if (tt) tt.style.display = show ? 'none' : '';
+}
+
+async function refreshData() {
+    const ok = await showConfirm({
+        icon: '🔄', title: 'Refresh Data',
+        message: 'Reload all data from database?',
+        details: { transaction: 'Refresh', amount: '—', status: '—' },
+        buttonClass: 'btn-primary', buttonText: '<i class="fas fa-sync"></i> Refresh'
+    });
+    if (!ok) return;
+    showNotification('Refreshing...', 'info');
+    loadData();
+}
+
+// ============================================================
+// MOBILE TABLE ENHANCEMENTS
+// ============================================================
+function enhanceTablesForMobile() {
+    if (window.innerWidth > 768) {
+        document.querySelectorAll('.table-wrap.mobile-cards').forEach(w => w.classList.remove('mobile-cards'));
         return;
     }
-    
-    document.querySelectorAll('.page-content').forEach(p => p.classList.remove('active'));
-    const targetPage = document.getElementById(`page-${page}`);
-    if (targetPage) targetPage.classList.add('active');
-    
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    const navItem = document.querySelector(`.nav-item[data-page="${page}"]`);
-    if (navItem) navItem.classList.add('active');
-
-    const titles = {
-        dashboard: 'Dashboard',
-        transactions: 'Transactions',
-        salary: 'Carwasher Salary',
-        store: 'Store Sales',
-        reports: 'Reports',
-        prices: 'Price Settings',
-        audit: 'Audit Trail',
-        backup: 'Backup & Restore'
-    };
-    
-    const titleEl = document.getElementById('pageTitle');
-    if (titleEl) titleEl.textContent = titles[page] || page;
-    
-    if (page === 'transactions') {
-        const badge = document.getElementById('txBadge');
-        if (badge) badge.textContent = transactions.length;
-    }
-    if (page === 'prices') renderPriceSettings();
-    if (page === 'audit') {
-        renderAuditLogs();
-        updateAuditBadge();
-    }
-    if (page === 'backup') {
-        renderBackupHistory();
-    }
-    if (page === 'store') {
-        renderStoreTotals();
-        updateStoreHistory();
-    }
-    
-    if (window.innerWidth <= 992) {
-        const sidebar = document.getElementById('sidebar');
-        const overlay = document.getElementById('sidebarOverlay');
-        if (sidebar) sidebar.classList.remove('open');
-        if (overlay) overlay.classList.remove('active');
-    }
+    document.querySelectorAll('table').forEach(table => {
+        const wrap = table.closest('.table-wrap');
+        if (!wrap) return;
+        if (table.querySelector('thead th')) {
+            wrap.classList.add('mobile-cards');
+        }
+    });
 }
+
+window.addEventListener('resize', () => { setTimeout(enhanceTablesForMobile, 100); });
+
+// ============================================================
+// ONGOING MODAL ALIAS
+// ============================================================
+function openOngoingModal() { openAddModal(); }
+function closeOngoingModal() { closeModal(); }
 
 // ============================================================
 // GLOBAL EXPOSURE
 // ============================================================
-window.openAddModal = openAddModal;
-window.openEditModal = openEditModal;
-window.openQuickAdd = openQuickAdd;
-window.closeQuickAdd = closeQuickAdd;
-window.saveQuickAdd = saveQuickAdd;
-window.deleteTransaction = deleteTransaction;
-window.deleteSelected = deleteSelected;
-window.refreshData = refreshData;
-window.saveTransaction = saveTransaction;
-window.closeModal = closeModal;
-window.toggleRow = toggleRow;
-window.toggleAllCheckboxes = toggleAllCheckboxes;
-window.updateStoreValue = updateStoreValue;
-window.applyFilters = applyFilters;
-window.clearFilters = clearFilters;
-window.exportData = exportData;
-window.addDropdownItem = addDropdownItem;
-window.handleLogin = handleLogin;
-window.handleLogout = handleLogout;
-window.toggleTransactionFields = toggleTransactionFields;
-window.calculateCarwashTotal = calculateCarwashTotal;
-window.calculateStoreTotal = calculateStoreTotal;
-window.calculateSalaries = calculateSalaries;
-window.saveSalaries = saveSalaries;
-window.updateSalaryRate = updateSalaryRate;
-window.toggleSalaryStatus = toggleSalaryStatus;
-window.addStoreItemToCarwash = addStoreItemToCarwash;
-window.addCustomStoreItem = addCustomStoreItem;
-window.removeStoreItem = removeStoreItem;
-window.addServiceToSelection = addServiceToSelection;
-window.removeServiceFromSelection = removeServiceFromSelection;
-window.generateReport = generateReport;
-window.generateCustomReport = generateCustomReport;
-window.exportReportExcel = exportReportExcel;
-window.exportReportPDF = exportReportPDF;
-window.updatePaymentStatus = updatePaymentStatus;
-window.switchPage = switchPage;
-window.toggleSidebar = toggleSidebar;
-window.filterAudit = filterAudit;
-window.refreshAudit = refreshAudit;
-window.exportAuditLogs = exportAuditLogs;
-window.viewAuditDetails = viewAuditDetails;
-window.closeAuditDetail = closeAuditDetail;
-window.formatPrice = formatPrice;
-window.executeConfirm = executeConfirm;
-window.closeConfirm = closeConfirm;
-window.saveAllPrices = saveAllPrices;
-window.loadServicePrices = loadServicePrices;
-window.markPriceChanged = markPriceChanged;
-window.sortTable = sortTable;
-window.createBackup = createBackup;
-window.restoreFromBackup = restoreFromBackup;
-window.downloadBackupFile = downloadBackupFile;
-window.deleteBackup = deleteBackup;
-window.addStoreTransaction = addStoreTransaction;
-window.refreshStoreData = refreshStoreData;
-window.exportStoreData = exportStoreData;
-window.exportSalaries = exportSalaries;
+const __globalFns = [
+    'switchPage', 'toggleSidebar', 'handleLogin', 'handleLogout',
+    'openAddModal', 'openEditModal', 'closeModal', 'saveTransaction',
+    'switchTransactionTab', 'completeOngoing', 'changeOngoingPayment',
+    'showNotification', 'deleteTransaction', 'deleteSelected', 'changePaymentStatus',
+    'quickReceipt', 'printReceipt', 'downloadReceiptPDF', 'closeReceiptModal',
+    'exportData', 'exportCompleted', 'exportAccessories',
+    'openQuickAdd', 'closeQuickAdd', 'saveQuickAdd',
+    'openAccessoryModal', 'closeAccessoryModal', 'updateAccessoryPrice',
+    'calculateAccessoryTotal', 'saveAccessory', 'addAccessoryTransaction',
+    'renderAccessories', 'filterAccessories', 'refreshAccessories',
+    'updateStoreValue', 'refreshStoreData', 'exportStoreData',
+    'openStoreItemModal', 'closeStoreItemModal', 'updateStoreItemPrice',
+    'calculateStoreItemTotal', 'saveStoreItem', 'quickAddStoreItem',
+    'loadServicePrices', 'markPriceChanged', 'saveAllPrices',
+    'openAddServiceModal', 'closeAddServiceModal', 'handleCategoryChange',
+    'saveNewService', 'calculateSalaries', 'saveSalaries', 'exportSalaries',
+    'updateSalaryDateRange', 'applyCustomSalaryDateRange',
+    'updateSalaryRate', 'markSalaryPaid',
+    'generateReport', 'generateCustomReport', 'exportReportExcel', 'exportReportPDF',
+    'refreshAudit', 'filterAudit', 'exportAuditLogs', 'closeAuditDetail',
+    'createBackup', 'restoreFromBackup',
+    'startTour', 'endTour', 'nextTourStep', 'prevTourStep',
+    'toggleRow', 'toggleAllCheckboxes', 'sortTable', 'clearFilters', 'applyFilters',
+    'filterCompleted', 'refreshOngoing', 'addDropdownItem',
+    'addServiceToSelection', 'removeServiceFromSelection',
+    'addCustomStoreItem', 'addStoreItemToCarwash', 'removeStoreItem',
+    'toggleTransactionFields', 'calculateStoreTotal', 'calculateCarwashTotal',
+    'refreshData', 'openOngoingModal', 'closeOngoingModal',
+    'enhanceTablesForMobile', 'autoCompleteOngoing', 
+    'promptPartialPayment', 'closePartialPaymentModal', 'confirmPartialPayment',
+    'viewCarwasherJobs', 'closeCarwasherJobsModal',
+	'switchKioskMode', 'filterKioskProducts', 'populateKioskCategoryFilter',
+'addToCart', 'incrementCart', 'decrementCart', 'removeFromCart', 'clearCart',
+'renderKioskGrid', 'renderKioskCart', 'getCartTotal', 'getCartQty',
+'openProductModal', 'closeProductModal', 'saveProduct', 'editProduct',
+'deleteProductConfirm', 'updateProductEmojiPreview',
+'kioskCheckout', 'loadProducts', 'saveProducts',
+    'getBalanceDue', 'toggleFabDock', 'openFabDock', 'closeFabDock', 'fabAction',
+'animateValue', 'animateMoney', 'animateCount', 'setReportPreset', 'updateReportPeriodDisplay', 'selectAllCategories',
+'generateMultiReports', 'renderMultiReports', 
+'renderBayPicker', 'selectBay', 'getOccupiedBays', 'refreshBayPickerIfOpen',
 
-console.log('✅ App initialized successfully with session persistence!');
+'exportCategoryExcel', 'exportCategoryCSV', 'printCategoryReport',
+'exportAllReportsExcel', 'exportAllReportsPDF', 'printAllReports', 
+    'setOngoingViewDate', 'setCompletedViewDate',
+    'onOngoingDateChange', 'onCompletedDateChange', 'jumpToToday'
+];
+__globalFns.forEach(name => {
+    if (typeof window[name] === 'undefined' && typeof eval(name) === 'function') {
+        window[name] = eval(name);
+    }
+});
