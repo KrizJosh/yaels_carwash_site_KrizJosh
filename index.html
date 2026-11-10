@@ -13,6 +13,7 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <!-- LOGIN SCREEN -->
     <div id="loginScreen" class="login-container">
         <div class="login-box">
             <div class="login-header">
@@ -32,14 +33,20 @@
                 <button type="submit" class="btn btn-primary btn-block">
                     <i class="fas fa-sign-in-alt"></i> Sign In
                 </button>
+                <div class="role-badge">
+                    <strong>Demo Accounts:</strong>
+                    <span>Admin: admin / password123</span>
+                    <span>Manager: manager / password123</span>
+                    <span>Staff: staff / password123</span>
+                </div>
                 <div id="loginError" class="error"></div>
             </form>
         </div>
     </div>
 
-    
+    <!-- MAIN APP -->
     <div id="mainApp" style="display:none;">
-        
+        <!-- SIDEBAR -->
         <div class="sidebar" id="sidebar">
             <div class="sidebar-brand">
                 <span class="brand-icon">🧼</span>
@@ -80,9 +87,6 @@
                 </a>
             </nav>
             <div class="sidebar-footer">
-                <button class="btn btn-info btn-sm btn-block" onclick="startTour()" style="background:#0ea5e9;color:white;margin-bottom:0.5rem;">
-                    <i class="fas fa-question-circle"></i> Quick Tour
-                </button>
                 <div class="user-profile">
                     <div class="user-avatar">👤</div>
                     <div class="user-info-sidebar">
@@ -98,104 +102,107 @@
 
         <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
 
+        <!-- MAIN CONTENT -->
         <div class="main-content" id="mainContent">
-			<div class="topbar">
-				<div class="topbar-left">
-					<button class="hamburger-btn" onclick="toggleSidebar()">
-						<i class="fas fa-bars"></i>
-					</button>
-					<div class="topbar-title-group">
-						<h2 id="pageTitle">Dashboard</h2>
-						<span class="badge-day" id="currentDate">Loading...</span>
-					</div>
-				</div>
-				<div class="topbar-right-inline">
-					<button class="btn btn-info btn-sm topbar-tour-btn" onclick="startTour()" title="Quick Tour">
-						<i class="fas fa-question-circle"></i>
-						<span class="tour-label">Tour</span>
-					</button>
-				</div>
-			</div>
+            <!-- TOP BAR -->
+            <div class="topbar">
+                <div class="topbar-left">
+                    <button class="hamburger-btn" onclick="toggleSidebar()">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                    <div class="topbar-title-group">
+                        <h2 id="pageTitle">Dashboard</h2>
+                        <span class="badge-day" id="currentDate">Loading...</span>
+                    </div>
+                </div>
+                <div class="topbar-right-inline">
+                    <button class="btn btn-info btn-sm topbar-tour-btn" onclick="startTour()" title="Quick Tour">
+                        <i class="fas fa-question-circle"></i>
+                        <span class="tour-label">Tour</span>
+                    </button>
+                </div>
+            </div>
 
-            
+            <!-- PAGE: DASHBOARD -->
             <div id="page-dashboard" class="page-content active">
                 <div id="loadingSpinner" class="loading-spinner" style="display:none;">
                     <i class="fas fa-spinner fa-spin"></i> Loading data...
                 </div>
 
-                
-				<div class="summary-grid-modern" id="summaryCards">
+                <!-- REDESIGNED SUMMARY GRID -->
+                <div class="summary-grid-modern" id="summaryCards">
+                    <div class="hero-card" onclick="switchPage('reports')">
+                        <div class="hero-bg"></div>
+                        <div class="hero-content">
+                            <div class="hero-top">
+                                <span class="hero-label">Total Income</span>
+                                <span class="hero-icon">🧾</span>
+                            </div>
+                            <div class="hero-value" id="incomeTotal" data-count="0">₱0</div>
+                            <div class="hero-foot">
+                                <span class="hero-trend"><i class="fas fa-arrow-trend-up"></i> Live</span>
+                                <span class="hero-hint">View reports <i class="fas fa-arrow-right"></i></span>
+                            </div>
+                        </div>
+                    </div>
 
-					<div class="hero-card" onclick="switchPage('reports')">
-						<div class="hero-bg"></div>
-						<div class="hero-content">
-							<div class="hero-top">
-								<span class="hero-label">Total Income</span>
-								<span class="hero-icon">🧾</span>
-							</div>
-							<div class="hero-value" id="incomeTotal" data-count="0">₱0</div>
-							<div class="hero-foot">
-								<span class="hero-trend"><i class="fas fa-arrow-trend-up"></i> Live</span>
-								<span class="hero-hint">View reports <i class="fas fa-arrow-right"></i></span>
-							</div>
-						</div>
-					</div>
-                    
-					<div class="mini-cards">
-
-						<div class="mini-card mc-carwash" onclick="switchPage('transactions')">
-							<div class="mc-icon">🚗</div>
-							<div class="mc-body">
-								<div class="mc-label">Cars Washed</div>
-								<div class="mc-value" id="carCount" data-count="0">0</div>
-								<div class="mc-sub">this session</div>
-							</div>
-							<div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
-						</div>
-
-						<div class="mini-card mc-carwash-total" onclick="switchPage('transactions')">
-							<div class="mc-icon">💰</div>
-							<div class="mc-body">
-								<div class="mc-label">Carwash Sales</div>
-								<div class="mc-value" id="carwashTotal" data-count="0">₱0</div>
-								<div class="mc-sub">all carwash</div>
-							</div>
-							<div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
-						</div>
-
-						<div class="mini-card mc-store" onclick="switchPage('store')">
-							<div class="mc-icon">🏪</div>
-							<div class="mc-body">
-								<div class="mc-label">Store Sales</div>
-								<div class="mc-value" id="storeTotal" data-count="0">₱0</div>
-								<div class="mc-sub">cigarettes + snacks</div>
-							</div>
-							<div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
-						</div>
-
-						<div class="mini-card mc-drinks" onclick="switchPage('store')">
-							<div class="mc-icon">🥤</div>
-							<div class="mc-body">
-								<div class="mc-label">Drinks Sales</div>
-								<div class="mc-value" id="drinksTotal" data-count="0">₱0</div>
-								<div class="mc-sub">beverages</div>
-							</div>
-							<div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
-						</div>
-
-						<div class="mini-card mc-paluto" onclick="switchPage('store')">
-							<div class="mc-icon">🍜</div>
-							<div class="mc-body">
-								<div class="mc-label">Paluto Sales</div>
-								<div class="mc-value" id="palutoTotal" data-count="0">₱0</div>
-								<div class="mc-sub">food sales</div>
-							</div>
-							<div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
-						</div>
-
-
-					</div>
-				</div>
+                    <div class="mini-cards">
+                        <div class="mini-card mc-carwash" onclick="switchPage('transactions')">
+                            <div class="mc-icon">🚗</div>
+                            <div class="mc-body">
+                                <div class="mc-label">Cars Washed</div>
+                                <div class="mc-value" id="carCount" data-count="0">0</div>
+                                <div class="mc-sub">this session</div>
+                            </div>
+                            <div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
+                        </div>
+                        <div class="mini-card mc-carwash-total" onclick="switchPage('transactions')">
+                            <div class="mc-icon">💰</div>
+                            <div class="mc-body">
+                                <div class="mc-label">Carwash Sales</div>
+                                <div class="mc-value" id="carwashTotal" data-count="0">₱0</div>
+                                <div class="mc-sub">all carwash</div>
+                            </div>
+                            <div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
+                        </div>
+                        <div class="mini-card mc-store" onclick="switchPage('store')">
+                            <div class="mc-icon">🏪</div>
+                            <div class="mc-body">
+                                <div class="mc-label">Store Sales</div>
+                                <div class="mc-value" id="storeTotal" data-count="0">₱0</div>
+                                <div class="mc-sub">cigarettes + snacks</div>
+                            </div>
+                            <div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
+                        </div>
+                        <div class="mini-card mc-drinks" onclick="switchPage('store')">
+                            <div class="mc-icon">🥤</div>
+                            <div class="mc-body">
+                                <div class="mc-label">Drinks Sales</div>
+                                <div class="mc-value" id="drinksTotal" data-count="0">₱0</div>
+                                <div class="mc-sub">beverages</div>
+                            </div>
+                            <div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
+                        </div>
+                        <div class="mini-card mc-paluto" onclick="switchPage('store')">
+                            <div class="mc-icon">🍜</div>
+                            <div class="mc-body">
+                                <div class="mc-label">Paluto Sales</div>
+                                <div class="mc-value" id="palutoTotal" data-count="0">₱0</div>
+                                <div class="mc-sub">food sales</div>
+                            </div>
+                            <div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
+                        </div>
+                        <div class="mini-card mc-accessories" onclick="switchPage('accessories')">
+                            <div class="mc-icon">🧴</div>
+                            <div class="mc-body">
+                                <div class="mc-label">Accessories</div>
+                                <div class="mc-value" id="accessoriesTotal" data-count="0">₱0</div>
+                                <div class="mc-sub">products</div>
+                            </div>
+                            <div class="mc-arrow"><i class="fas fa-chevron-right"></i></div>
+                        </div>
+                    </div>
+                </div>
 
                 <div class="quick-stats">
                     <div class="quick-stat" onclick="switchTransactionTab('ongoing');switchPage('transactions');">
@@ -229,7 +236,8 @@
                     </table>
                 </div>
             </div>
-            
+
+            <!-- PAGE: TRANSACTIONS -->
             <div id="page-transactions" class="page-content">
                 <div class="transaction-tabs">
                     <button class="transaction-tab active" data-tab="all" onclick="switchTransactionTab('all')">
@@ -273,7 +281,7 @@
                 </div>
 
                 <div class="transaction-tab-content">
-                    
+                    <!-- ALL TAB -->
                     <div id="tab-all" class="tab-panel active">
                         <div class="table-toolbar">
                             <span class="table-title"><i class="fas fa-list"></i> All Transactions</span>
@@ -286,7 +294,6 @@
                                 </button>
                             </div>
                         </div>
-
                         <div class="table-wrap" id="tableWrap">
                             <div id="loadingState" class="loading-spinner">Loading data...</div>
                             <table id="transactionsTable" style="display:none;">
@@ -299,7 +306,6 @@
                                         <th class="sortable" data-sort="item" onclick="sortTable('item')">Item <span class="sort-icon">⇅</span></th>
                                         <th class="sortable" data-sort="carwasher" onclick="sortTable('carwasher')">Carwasher <span class="sort-icon">⇅</span></th>
                                         <th class="sortable" data-sort="total" onclick="sortTable('total')">Total <span class="sort-icon">⇅</span></th>
-                                        <th class="sortable" data-sort="payment" onclick="sortTable('payment')">Payment <span class="sort-icon">⇅</span></th>
                                         <th class="sortable" data-sort="status" onclick="sortTable('status')">Status <span class="sort-icon">⇅</span></th>
                                         <th style="width:110px;">Actions</th>
                                     </tr>
@@ -309,9 +315,17 @@
                             </table>
                         </div>
                     </div>
-                    
+
+                    <!-- ONGOING TAB -->
                     <div id="tab-ongoing" class="tab-panel">
                         <div class="ongoing-stats" id="ongoingStats">
+                            <div class="ongoing-stat ongoing-stat-overdue" id="ongoingOverdueCard">
+                                <div class="ongoing-stat-icon">⏰</div>
+                                <div class="ongoing-stat-info">
+                                    <div class="ongoing-stat-label">Overdue (>1h)</div>
+                                    <div class="ongoing-stat-value" id="ongoingOverdue">0</div>
+                                </div>
+                            </div>
                             <div class="ongoing-stat">
                                 <div class="ongoing-stat-icon">🕐</div>
                                 <div class="ongoing-stat-info">
@@ -360,11 +374,14 @@
                                 </button>
                             </div>
                         </div>
-						
-						<div class="alert-box alert-info" style="margin-bottom: 0.5rem;">
-							<i class="fas fa-magic"></i>
-							<span>Setting payment to <strong>PAID</strong> will automatically move the wash to <strong>Completed</strong>.</span>
-						</div>
+
+                        <div class="alert-box alert-info" style="margin-bottom: 0.5rem;">
+                            <i class="fas fa-bell"></i>
+                            <span>
+                                Setting payment to <strong>PAID</strong> will automatically move the wash to <strong>Completed</strong>.
+                                Washes running over <strong>1 hour</strong> are flagged as <span style="color:var(--danger);font-weight:800;">overdue</span>.
+                            </span>
+                        </div>
 
                         <div class="table-wrap">
                             <table id="ongoingTable">
@@ -387,7 +404,8 @@
                             </table>
                         </div>
                     </div>
-                    
+
+                    <!-- COMPLETED TAB -->
                     <div id="tab-completed" class="tab-panel">
                         <div class="ongoing-stats">
                             <div class="ongoing-stat" style="border-left-color: var(--success);">
@@ -472,7 +490,8 @@
                     </div>
                 </div>
             </div>
-            
+
+            <!-- PAGE: SALARY -->
             <div id="page-salary" class="page-content">
                 <div class="salary-header">
                     <div class="salary-header-left">
@@ -562,386 +581,382 @@
                 </div>
             </div>
 
-            
-			<div id="page-store" class="page-content">
-				<div class="kiosk-layout">
-                    
-					<div class="kiosk-main">
-                        
-						<div class="kiosk-tabs">
-							<button class="kiosk-tab active" data-kiosk="store" onclick="switchKioskMode('store')">
-								<i class="fas fa-store"></i> Store
-							</button>
-							<button class="kiosk-tab" data-kiosk="accessories" onclick="switchKioskMode('accessories')">
-								<i class="fas fa-spray-can-sparkles"></i> Accessories
-							</button>
-						</div>
+            <!-- PAGE: STORE (Kiosk Style) -->
+            <div id="page-store" class="page-content">
+                <div class="kiosk-layout">
+                    <div class="kiosk-main">
+                        <div class="kiosk-tabs">
+                            <button class="kiosk-tab active" data-kiosk="store" onclick="switchKioskMode('store')">
+                                <i class="fas fa-store"></i> Store
+                            </button>
+                            <button class="kiosk-tab" data-kiosk="accessories" onclick="switchKioskMode('accessories')">
+                                <i class="fas fa-spray-can-sparkles"></i> Accessories
+                            </button>
+                        </div>
 
-                        
-						<div class="kiosk-toolbar">
-							<div class="kiosk-search">
-								<i class="fas fa-search"></i>
-								<input type="text" id="kioskSearch" placeholder="Search products..." oninput="filterKioskProducts()">
-							</div>
-							<select id="kioskCategoryFilter" class="kiosk-category-filter" onchange="filterKioskProducts()">
-								<option value="all">All Categories</option>
-							</select>
-							<button class="btn btn-sm btn-primary" onclick="openProductModal()">
-								<i class="fas fa-plus"></i> Add Product
-							</button>
-						</div>
+                        <div class="kiosk-toolbar">
+                            <div class="kiosk-search">
+                                <i class="fas fa-search"></i>
+                                <input type="text" id="kioskSearch" placeholder="Search products..." oninput="filterKioskProducts()">
+                            </div>
+                            <select id="kioskCategoryFilter" class="kiosk-category-filter" onchange="filterKioskProducts()">
+                                <option value="all">All Categories</option>
+                            </select>
+                            <button class="btn btn-sm btn-primary" onclick="openProductModal()">
+                                <i class="fas fa-plus"></i> Add Product
+                            </button>
+                        </div>
 
-                        
-						<div id="kioskGrid" class="kiosk-grid"></div>
-					</div>
+                        <div id="kioskGrid" class="kiosk-grid"></div>
+                    </div>
 
-                    
-					<div class="kiosk-cart-panel">
-						<div class="kiosk-cart-header">
-							<div>
-								<div class="kiosk-cart-title"><i class="fas fa-shopping-cart"></i> Cart</div>
-								<div class="kiosk-cart-sub"><span id="kioskCartCount">0</span> items</div>
-							</div>
-							<button class="btn btn-sm btn-outline" onclick="clearCart()" title="Clear cart">
-								<i class="fas fa-trash"></i>
-							</button>
-						</div>
+                    <div class="kiosk-cart-panel" id="kioskCartPanel">
+                        <div class="kiosk-cart-header" onclick="toggleMobileCart()">
+                            <div>
+                                <div class="kiosk-cart-title"><i class="fas fa-shopping-cart"></i> Cart</div>
+                                <div class="kiosk-cart-sub"><span id="kioskCartCount">0</span> items</div>
+                            </div>
+                            <button class="btn btn-sm btn-outline" onclick="event.stopPropagation();clearCart()" title="Clear cart">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
 
-						<div class="kiosk-cart-items" id="kioskCartItems"></div>
+                        <div class="kiosk-cart-items" id="kioskCartItems"></div>
 
-						<div class="kiosk-cart-empty" id="kioskCartEmpty">
-							<div style="font-size:3rem; opacity:0.3;">🛒</div>
-							<div style="font-weight:600; color:var(--gray-500); margin-top:0.5rem;">Cart is empty</div>
-							<div style="font-size:0.75rem; color:var(--gray-400); margin-top:0.25rem;">Tap any product to add</div>
-						</div>
+                        <div class="kiosk-cart-empty" id="kioskCartEmpty">
+                            <div style="font-size:3rem; opacity:0.3;">🛒</div>
+                            <div style="font-weight:600; color:var(--gray-500); margin-top:0.5rem;">Cart is empty</div>
+                            <div style="font-size:0.75rem; color:var(--gray-400); margin-top:0.25rem;">Tap any product to add</div>
+                        </div>
 
-						<div class="kiosk-cart-footer">
-							<div class="kiosk-summary-row">
-								<span>Subtotal</span>
-								<span id="kioskSubtotal">₱0.00</span>
-							</div>
-							<div class="kiosk-summary-row kiosk-summary-total">
-								<span>TOTAL</span>
-								<span id="kioskTotal">₱0.00</span>
-							</div>
-							<div class="kiosk-payment-row">
-								<label>Payment</label>
-								<select id="kioskPayment">
-									<option value="CASH">💵 CASH</option>
-									<option value="GCASH">📱 GCASH</option>
-									<option value="MARI BANK">🏦 MARI BANK</option>
-									<option value="OTHER BANKS">🏦 OTHER BANKS</option>
-								</select>
-							</div>
-							<button class="btn btn-success kiosk-checkout-btn" id="kioskCheckoutBtn" onclick="kioskCheckout()" disabled>
-								<i class="fas fa-check"></i> Complete Sale
-							</button>
-						</div>
-					</div>
-				</div>
+                        <div class="kiosk-cart-footer">
+                            <div class="kiosk-summary-row">
+                                <span>Subtotal</span>
+                                <span id="kioskSubtotal">₱0.00</span>
+                            </div>
+                            <div class="kiosk-summary-row kiosk-summary-total">
+                                <span>TOTAL</span>
+                                <span id="kioskTotal">₱0.00</span>
+                            </div>
+                            <div class="kiosk-payment-row">
+                                <label>Payment</label>
+                                <select id="kioskPayment">
+                                    <option value="CASH">💵 CASH</option>
+                                    <option value="GCASH">📱 GCASH</option>
+                                    <option value="MARI BANK">🏦 MARI BANK</option>
+                                    <option value="OTHER BANKS">🏦 OTHER BANKS</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-success kiosk-checkout-btn" id="kioskCheckoutBtn" onclick="kioskCheckout()" disabled>
+                                <i class="fas fa-check"></i> Complete Sale
+                            </button>
+                        </div>
+                    </div>
+                </div>
 
-                
-				<div class="store-summary" id="storeSummary" style="margin-top:1.5rem;">
-					<div class="store-summary-item">
-						<div class="label">📦 Store Items</div>
-						<div class="value primary" id="storeItemsSummary">₱0</div>
-					</div>
-					<div class="store-summary-item">
-						<div class="label">🥤 Drinks</div>
-						<div class="value" id="totalDrinksSummary">₱0</div>
-					</div>
-					<div class="store-summary-item">
-						<div class="label">🍜 Paluto</div>
-						<div class="value" id="totalPalutoSummary">₱0</div>
-					</div>
-					<div class="store-summary-item">
-						<div class="label">💰 Other Income</div>
-						<div class="value success" id="totalOtherSummary">₱0</div>
-					</div>
-					<div class="store-summary-item">
-						<div class="label">🧾 Grand Total</div>
-						<div class="value" style="color:var(--primary);font-weight:700;" id="totalStoreSales">₱0</div>
-					</div>
-				</div>
+                <div class="store-summary" id="storeSummary" style="margin-top:1.5rem;">
+                    <div class="store-summary-item">
+                        <div class="label">📦 Store Items</div>
+                        <div class="value primary" id="storeItemsSummary">₱0</div>
+                    </div>
+                    <div class="store-summary-item">
+                        <div class="label">🥤 Drinks</div>
+                        <div class="value" id="totalDrinksSummary">₱0</div>
+                    </div>
+                    <div class="store-summary-item">
+                        <div class="label">🍜 Paluto</div>
+                        <div class="value" id="totalPalutoSummary">₱0</div>
+                    </div>
+                    <div class="store-summary-item">
+                        <div class="label">💰 Other Income</div>
+                        <div class="value success" id="totalOtherSummary">₱0</div>
+                    </div>
+                    <div class="store-summary-item">
+                        <div class="label">🧾 Grand Total</div>
+                        <div class="value" style="color:var(--primary);font-weight:700;" id="totalStoreSales">₱0</div>
+                    </div>
+                </div>
 
-				<div class="store-history">
-					<div class="store-history-header">
-						<h4><i class="fas fa-clock"></i> Recent Transactions</h4>
-						<button class="btn btn-sm btn-outline" onclick="switchPage('transactions')">View All</button>
-					</div>
-					<div class="table-wrap">
-						<table id="storeHistoryTable">
-							<thead>
-								<tr>
-									<th>#</th>
-									<th>Date</th>
-									<th>Item</th>
-									<th>Qty</th>
-									<th>Amount</th>
-									<th>Type</th>
-									<th>Status</th>
-									<th style="width:80px;">Action</th>
-								</tr>
-							</thead>
-							<tbody id="storeHistoryBody"></tbody>
-						</table>
-					</div>
-				</div>
-			</div>
-            
-			<div id="page-accessories" class="page-content">
-				<div class="kiosk-layout">
-					<div class="kiosk-main">
-						<div class="kiosk-tabs">
-							<button class="kiosk-tab" data-kiosk="store" onclick="switchKioskMode('store')">
-								<i class="fas fa-store"></i> Store
-							</button>
-							<button class="kiosk-tab active" data-kiosk="accessories" onclick="switchKioskMode('accessories')">
-								<i class="fas fa-spray-can-sparkles"></i> Accessories
-							</button>
-						</div>
+                <div class="store-history">
+                    <div class="store-history-header">
+                        <h4><i class="fas fa-clock"></i> Recent Transactions</h4>
+                        <button class="btn btn-sm btn-outline" onclick="switchPage('transactions')">View All</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="storeHistoryTable">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Date</th>
+                                    <th>Item</th>
+                                    <th>Qty</th>
+                                    <th>Amount</th>
+                                    <th>Type</th>
+                                    <th>Status</th>
+                                    <th style="width:80px;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="storeHistoryBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
 
-						<div class="kiosk-toolbar">
-							<div class="kiosk-search">
-								<i class="fas fa-search"></i>
-								<input type="text" id="kioskSearchAccessories" placeholder="Search accessories..." oninput="filterKioskProducts()">
-							</div>
-							<select id="kioskCategoryFilterAccessories" class="kiosk-category-filter" onchange="filterKioskProducts()" style="display:none;">
-								<option value="accessories">Accessories</option>
-							</select>
-							<button class="btn btn-sm btn-primary" onclick="openProductModal()">
-								<i class="fas fa-plus"></i> Add Accessory
-							</button>
-						</div>
+            <!-- PAGE: ACCESSORIES (Kiosk Style) -->
+            <div id="page-accessories" class="page-content">
+                <div class="kiosk-layout">
+                    <div class="kiosk-main">
+                        <div class="kiosk-tabs">
+                            <button class="kiosk-tab" data-kiosk="store" onclick="switchKioskMode('store')">
+                                <i class="fas fa-store"></i> Store
+                            </button>
+                            <button class="kiosk-tab active" data-kiosk="accessories" onclick="switchKioskMode('accessories')">
+                                <i class="fas fa-spray-can-sparkles"></i> Accessories
+                            </button>
+                        </div>
 
-						<div id="kioskGridAccessories" class="kiosk-grid"></div>
-					</div>
+                        <div class="kiosk-toolbar">
+                            <div class="kiosk-search">
+                                <i class="fas fa-search"></i>
+                                <input type="text" id="kioskSearchAcc" placeholder="Search accessories..." oninput="filterKioskProducts()">
+                            </div>
+                            <select id="kioskCategoryFilterAcc" class="kiosk-category-filter" onchange="filterKioskProducts()" style="display:none;">
+                                <option value="accessories">Accessories</option>
+                            </select>
+                            <button class="btn btn-sm btn-primary" onclick="openProductModal()">
+                                <i class="fas fa-plus"></i> Add Accessory
+                            </button>
+                        </div>
 
-					<div class="kiosk-cart-panel">
-						<div class="kiosk-cart-header">
-							<div>
-								<div class="kiosk-cart-title"><i class="fas fa-shopping-cart"></i> Cart</div>
-								<div class="kiosk-cart-sub"><span id="kioskCartCountAcc">0</span> items</div>
-							</div>
-							<button class="btn btn-sm btn-outline" onclick="clearCart()" title="Clear cart">
-								<i class="fas fa-trash"></i>
-							</button>
-						</div>
-						<div class="kiosk-cart-items" id="kioskCartItemsAcc"></div>
-						<div class="kiosk-cart-empty" id="kioskCartEmptyAcc">
-							<div style="font-size:3rem; opacity:0.3;">🛒</div>
-							<div style="font-weight:600; color:var(--gray-500); margin-top:0.5rem;">Cart is empty</div>
-							<div style="font-size:0.75rem; color:var(--gray-400); margin-top:0.25rem;">Tap any accessory to add</div>
-						</div>
-						<div class="kiosk-cart-footer">
-							<div class="kiosk-summary-row">
-								<span>Subtotal</span>
-								<span id="kioskSubtotalAcc">₱0.00</span>
-							</div>
-							<div class="kiosk-summary-row kiosk-summary-total">
-								<span>TOTAL</span>
-								<span id="kioskTotalAcc">₱0.00</span>
-							</div>
-							<div class="kiosk-payment-row">
-								<label>Payment</label>
-								<select id="kioskPaymentAcc">
-									<option value="CASH">💵 CASH</option>
-									<option value="GCASH">📱 GCASH</option>
-									<option value="MARI BANK">🏦 MARI BANK</option>
-									<option value="OTHER BANKS">🏦 OTHER BANKS</option>
-								</select>
-							</div>
-							<button class="btn btn-success kiosk-checkout-btn" id="kioskCheckoutBtnAcc" onclick="kioskCheckout()" disabled>
-								<i class="fas fa-check"></i> Complete Sale
-							</button>
-						</div>
-					</div>
-				</div>
+                        <div id="kioskGridAcc" class="kiosk-grid"></div>
+                    </div>
 
-                
-				<div class="store-summary" id="accessoriesSummary" style="margin-top:1.5rem;">
-					<div class="store-summary-item">
-						<div class="label">🧴 Total Sales</div>
-						<div class="value primary" id="totalAccessoriesSales">₱0</div>
-					</div>
-					<div class="store-summary-item">
-						<div class="label">📦 Items Sold</div>
-						<div class="value" id="totalAccessoriesItems">0</div>
-					</div>
-					<div class="store-summary-item">
-						<div class="label">💰 Average Sale</div>
-						<div class="value success" id="avgAccessorySale">₱0</div>
-					</div>
-				</div>
+                    <div class="kiosk-cart-panel" id="kioskCartPanelAcc">
+                        <div class="kiosk-cart-header" onclick="toggleMobileCart()">
+                            <div>
+                                <div class="kiosk-cart-title"><i class="fas fa-shopping-cart"></i> Cart</div>
+                                <div class="kiosk-cart-sub"><span id="kioskCartCountAcc">0</span> items</div>
+                            </div>
+                            <button class="btn btn-sm btn-outline" onclick="event.stopPropagation();clearCart()" title="Clear cart">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
 
-				<div class="table-wrap">
-					<table id="accessoriesTable">
-						<thead>
-							<tr>
-								<th>#</th>
-								<th>Date</th>
-								<th>Item</th>
-								<th>Quantity</th>
-								<th>Unit Price</th>
-								<th>Total</th>
-								<th>Payment</th>
-								<th>Status</th>
-								<th style="width:100px;">Actions</th>
-							</tr>
-						</thead>
-						<tbody id="accessoriesBody"></tbody>
-					</table>
-				</div>
-			</div>
-            
-			<div id="page-reports" class="page-content">
-				<div class="reports-header">
-					<div class="reports-header-left">
-						<h3><i class="fas fa-file-alt"></i> Sales Reports</h3>
-						<p>Generate detailed reports by category and export them individually or all at once</p>
-					</div>
-				</div>
-                
-				<div class="reports-controls">
-					<div class="report-preset-row">
-						<span class="preset-label"><i class="fas fa-calendar-alt"></i> Period:</span>
-						<button class="btn btn-sm btn-primary report-preset-btn active" data-preset="daily" onclick="setReportPreset('daily')">
-							<i class="fas fa-calendar-day"></i> Daily
-						</button>
-						<button class="btn btn-sm btn-outline report-preset-btn" data-preset="weekly" onclick="setReportPreset('weekly')">
-							<i class="fas fa-calendar-week"></i> Weekly
-						</button>
-						<button class="btn btn-sm btn-outline report-preset-btn" data-preset="monthly" onclick="setReportPreset('monthly')">
-							<i class="fas fa-calendar-alt"></i> Monthly
-						</button>
-						<button class="btn btn-sm btn-outline report-preset-btn" data-preset="yearly" onclick="setReportPreset('yearly')">
-							<i class="fas fa-calendar"></i> Yearly
-						</button>
-						<button class="btn btn-sm btn-outline report-preset-btn" data-preset="custom" onclick="setReportPreset('custom')">
-							<i class="fas fa-sliders-h"></i> Custom
-						</button>
-					</div>
-					<div id="customDateRange" style="display:none; margin-top: 0.85rem;">
-						<div class="date-range">
-							<div><label>From:</label><input type="date" id="reportDateFrom"></div>
-							<div><label>To:</label><input type="date" id="reportDateTo"></div>
-						</div>
-					</div>
-					<div class="report-period-display" id="reportPeriodDisplay">
-						<i class="fas fa-clock"></i> <span>Select period</span>
-					</div>
-				</div>
-                
-				<div class="report-category-selector">
-					<div class="rcs-header">
-						<span class="rcs-title"><i class="fas fa-filter"></i> Include Categories</span>
-						<div class="rcs-actions">
-							<button class="btn btn-sm btn-outline" onclick="selectAllCategories(true)">
-								<i class="fas fa-check-double"></i> All
-							</button>
-							<button class="btn btn-sm btn-outline" onclick="selectAllCategories(false)">
-								<i class="fas fa-times"></i> None
-							</button>
-						</div>
-					</div>
-					<div class="rcs-grid">
-						<label class="rcs-chip rcs-carwash">
-							<input type="checkbox" class="rcs-checkbox" value="carwash" checked>
-							<span class="rcs-chip-content">
-								<span class="rcs-icon">🚘</span>
-								<span class="rcs-label">Carwash</span>
-							</span>
-						</label>
-						<label class="rcs-chip rcs-store">
-							<input type="checkbox" class="rcs-checkbox" value="store" checked>
-							<span class="rcs-chip-content">
-								<span class="rcs-icon">🏪</span>
-								<span class="rcs-label">Store</span>
-							</span>
-						</label>
-						<label class="rcs-chip rcs-accessories">
-							<input type="checkbox" class="rcs-checkbox" value="accessories" checked>
-							<span class="rcs-chip-content">
-								<span class="rcs-icon">🧴</span>
-								<span class="rcs-label">Accessories</span>
-							</span>
-						</label>
-						<label class="rcs-chip rcs-drinks">
-							<input type="checkbox" class="rcs-checkbox" value="drinks" checked>
-							<span class="rcs-chip-content">
-								<span class="rcs-icon">🥤</span>
-								<span class="rcs-label">Drinks</span>
-							</span>
-						</label>
-						<label class="rcs-chip rcs-paluto">
-							<input type="checkbox" class="rcs-checkbox" value="paluto" checked>
-							<span class="rcs-chip-content">
-								<span class="rcs-icon">🍜</span>
-								<span class="rcs-label">Paluto</span>
-							</span>
-						</label>
-						<label class="rcs-chip rcs-other">
-							<input type="checkbox" class="rcs-checkbox" value="other" checked>
-							<span class="rcs-chip-content">
-								<span class="rcs-icon">💰</span>
-								<span class="rcs-label">Other</span>
-							</span>
-						</label>
-					</div>
-				</div>
+                        <div class="kiosk-cart-items" id="kioskCartItemsAcc"></div>
 
-                
-				<div class="reports-action-row">
-					<button class="btn btn-primary" onclick="generateMultiReports()">
-						<i class="fas fa-play"></i> Generate Reports
-					</button>
-					<button class="btn btn-success" onclick="exportAllReportsExcel()">
-						<i class="fas fa-file-excel"></i> Export All (Excel)
-					</button>
-					<button class="btn btn-danger" onclick="exportAllReportsPDF()">
-						<i class="fas fa-file-pdf"></i> Export All (PDF)
-					</button>
-					<button class="btn btn-outline" onclick="printAllReports()">
-						<i class="fas fa-print"></i> Print
-					</button>
-				</div>
+                        <div class="kiosk-cart-empty" id="kioskCartEmptyAcc">
+                            <div style="font-size:3rem; opacity:0.3;">🛒</div>
+                            <div style="font-weight:600; color:var(--gray-500); margin-top:0.5rem;">Cart is empty</div>
+                            <div style="font-size:0.75rem; color:var(--gray-400); margin-top:0.25rem;">Tap any accessory to add</div>
+                        </div>
 
-                
-				<div id="reportTotalsBar" class="report-totals-bar" style="display:none;">
-					<div class="rtb-item rtb-grand">
-						<span class="rtb-label">Grand Total</span>
-						<span class="rtb-value" id="rtbGrand">₱0.00</span>
-					</div>
-					<div class="rtb-item rtb-txcount">
-						<span class="rtb-label">Transactions</span>
-						<span class="rtb-value" id="rtbTxCount">0</span>
-					</div>
-					<div class="rtb-item rtb-count">
-						<span class="rtb-label">Categories</span>
-						<span class="rtb-value" id="rtbCategories">0</span>
-					</div>
-					<div class="rtb-item rtb-period">
-						<span class="rtb-label">Period</span>
-						<span class="rtb-value" id="rtbPeriod">—</span>
-					</div>
-				</div>
+                        <div class="kiosk-cart-footer">
+                            <div class="kiosk-summary-row">
+                                <span>Subtotal</span>
+                                <span id="kioskSubtotalAcc">₱0.00</span>
+                            </div>
+                            <div class="kiosk-summary-row kiosk-summary-total">
+                                <span>TOTAL</span>
+                                <span id="kioskTotalAcc">₱0.00</span>
+                            </div>
+                            <div class="kiosk-payment-row">
+                                <label>Payment</label>
+                                <select id="kioskPaymentAcc">
+                                    <option value="CASH">💵 CASH</option>
+                                    <option value="GCASH">📱 GCASH</option>
+                                    <option value="MARI BANK">🏦 MARI BANK</option>
+                                    <option value="OTHER BANKS">🏦 OTHER BANKS</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-success kiosk-checkout-btn" id="kioskCheckoutBtnAcc" onclick="kioskCheckout()" disabled>
+                                <i class="fas fa-check"></i> Complete Sale
+                            </button>
+                        </div>
+                    </div>
+                </div>
 
-                
-				<div id="reportResults" class="report-results-container"></div>
-			</div>
-            
+                <div class="store-summary" id="accessoriesSummary" style="margin-top:1.5rem;">
+                    <div class="store-summary-item">
+                        <div class="label">🧴 Total Sales</div>
+                        <div class="value primary" id="totalAccessoriesSales">₱0</div>
+                    </div>
+                    <div class="store-summary-item">
+                        <div class="label">📦 Items Sold</div>
+                        <div class="value" id="totalAccessoriesItems">0</div>
+                    </div>
+                    <div class="store-summary-item">
+                        <div class="label">💰 Average Sale</div>
+                        <div class="value success" id="avgAccessorySale">₱0</div>
+                    </div>
+                </div>
+
+                <div class="table-wrap">
+                    <table id="accessoriesTable">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Date</th>
+                                <th>Item</th>
+                                <th>Quantity</th>
+                                <th>Unit Price</th>
+                                <th>Total</th>
+                                <th>Payment</th>
+                                <th>Status</th>
+                                <th style="width:100px;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accessoriesBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- PAGE: REPORTS -->
+            <div id="page-reports" class="page-content">
+                <div class="reports-header">
+                    <div class="reports-header-left">
+                        <h3><i class="fas fa-file-alt"></i> Sales Reports</h3>
+                        <p>Generate detailed reports by category and export them individually or all at once</p>
+                    </div>
+                </div>
+
+                <div class="reports-controls">
+                    <div class="report-preset-row">
+                        <span class="preset-label"><i class="fas fa-calendar-alt"></i> Period:</span>
+                        <button class="btn btn-sm btn-primary report-preset-btn active" data-preset="daily" onclick="setReportPreset('daily')">
+                            <i class="fas fa-calendar-day"></i> Daily
+                        </button>
+                        <button class="btn btn-sm btn-outline report-preset-btn" data-preset="weekly" onclick="setReportPreset('weekly')">
+                            <i class="fas fa-calendar-week"></i> Weekly
+                        </button>
+                        <button class="btn btn-sm btn-outline report-preset-btn" data-preset="monthly" onclick="setReportPreset('monthly')">
+                            <i class="fas fa-calendar-alt"></i> Monthly
+                        </button>
+                        <button class="btn btn-sm btn-outline report-preset-btn" data-preset="yearly" onclick="setReportPreset('yearly')">
+                            <i class="fas fa-calendar"></i> Yearly
+                        </button>
+                        <button class="btn btn-sm btn-outline report-preset-btn" data-preset="custom" onclick="setReportPreset('custom')">
+                            <i class="fas fa-sliders-h"></i> Custom
+                        </button>
+                    </div>
+                    <div id="customDateRange" style="display:none; margin-top: 0.85rem;">
+                        <div class="date-range">
+                            <div><label>From:</label><input type="date" id="reportDateFrom"></div>
+                            <div><label>To:</label><input type="date" id="reportDateTo"></div>
+                        </div>
+                    </div>
+                    <div class="report-period-display" id="reportPeriodDisplay">
+                        <i class="fas fa-clock"></i> <span>Select period</span>
+                    </div>
+                </div>
+
+                <div class="report-category-selector">
+                    <div class="rcs-header">
+                        <span class="rcs-title"><i class="fas fa-filter"></i> Include Categories</span>
+                        <div class="rcs-actions">
+                            <button class="btn btn-sm btn-outline" onclick="selectAllCategories(true)">
+                                <i class="fas fa-check-double"></i> All
+                            </button>
+                            <button class="btn btn-sm btn-outline" onclick="selectAllCategories(false)">
+                                <i class="fas fa-times"></i> None
+                            </button>
+                        </div>
+                    </div>
+                    <div class="rcs-grid">
+                        <label class="rcs-chip rcs-carwash">
+                            <input type="checkbox" class="rcs-checkbox" value="carwash" checked>
+                            <span class="rcs-chip-content">
+                                <span class="rcs-icon">🚘</span>
+                                <span class="rcs-label">Carwash</span>
+                            </span>
+                        </label>
+                        <label class="rcs-chip rcs-store">
+                            <input type="checkbox" class="rcs-checkbox" value="store" checked>
+                            <span class="rcs-chip-content">
+                                <span class="rcs-icon">🏪</span>
+                                <span class="rcs-label">Store</span>
+                            </span>
+                        </label>
+                        <label class="rcs-chip rcs-accessories">
+                            <input type="checkbox" class="rcs-checkbox" value="accessories" checked>
+                            <span class="rcs-chip-content">
+                                <span class="rcs-icon">🧴</span>
+                                <span class="rcs-label">Accessories</span>
+                            </span>
+                        </label>
+                        <label class="rcs-chip rcs-drinks">
+                            <input type="checkbox" class="rcs-checkbox" value="drinks" checked>
+                            <span class="rcs-chip-content">
+                                <span class="rcs-icon">🥤</span>
+                                <span class="rcs-label">Drinks</span>
+                            </span>
+                        </label>
+                        <label class="rcs-chip rcs-paluto">
+                            <input type="checkbox" class="rcs-checkbox" value="paluto" checked>
+                            <span class="rcs-chip-content">
+                                <span class="rcs-icon">🍜</span>
+                                <span class="rcs-label">Paluto</span>
+                            </span>
+                        </label>
+                        <label class="rcs-chip rcs-other">
+                            <input type="checkbox" class="rcs-checkbox" value="other" checked>
+                            <span class="rcs-chip-content">
+                                <span class="rcs-icon">💰</span>
+                                <span class="rcs-label">Other</span>
+                            </span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="reports-action-row">
+                    <button class="btn btn-primary" onclick="generateMultiReports()">
+                        <i class="fas fa-play"></i> Generate Reports
+                    </button>
+                    <button class="btn btn-success" onclick="exportAllReportsExcel()">
+                        <i class="fas fa-file-excel"></i> Export All (Excel)
+                    </button>
+                    <button class="btn btn-danger" onclick="exportAllReportsPDF()">
+                        <i class="fas fa-file-pdf"></i> Export All (PDF)
+                    </button>
+                    <button class="btn btn-outline" onclick="printAllReports()">
+                        <i class="fas fa-print"></i> Print
+                    </button>
+                </div>
+
+                <div id="reportTotalsBar" class="report-totals-bar" style="display:none;">
+                    <div class="rtb-item rtb-grand">
+                        <span class="rtb-label">Grand Total</span>
+                        <span class="rtb-value" id="rtbGrand">₱0.00</span>
+                    </div>
+                    <div class="rtb-item rtb-txcount">
+                        <span class="rtb-label">Transactions</span>
+                        <span class="rtb-value" id="rtbTxCount">0</span>
+                    </div>
+                    <div class="rtb-item rtb-count">
+                        <span class="rtb-label">Categories</span>
+                        <span class="rtb-value" id="rtbCategories">0</span>
+                    </div>
+                    <div class="rtb-item rtb-period">
+                        <span class="rtb-label">Period</span>
+                        <span class="rtb-value" id="rtbPeriod">—</span>
+                    </div>
+                </div>
+
+                <div id="reportResults" class="report-results-container"></div>
+            </div>
+
+            <!-- PAGE: PRICES -->
             <div id="page-prices" class="page-content">
                 <div class="section-header">
                     <div class="section-header-left">
                         <h3><i class="fas fa-tags"></i> Price Settings</h3>
-                        <p>Manage service prices. Changes are saved to the database.</p>
+                        <p>Manage service names, sizes and prices. Changes save on Save All.</p>
                     </div>
                     <div class="section-header-right">
                         <button class="btn btn-primary" onclick="openAddServiceModal()">
                             <i class="fas fa-plus"></i> Add Service
                         </button>
                         <button class="btn btn-success" onclick="saveAllPrices()">
-                            <i class="fas fa-save"></i> Save
+                            <i class="fas fa-save"></i> Save All
                         </button>
                         <button class="btn btn-outline" onclick="loadServicePrices()">
                             <i class="fas fa-sync"></i> Refresh
@@ -952,14 +967,15 @@
                     <div class="flex-between" style="margin-bottom: 0.5rem;">
                         <div>
                             <div class="section-title">Service Price List</div>
-                            <div class="section-subtitle">Edit prices below and click "Save" to update.</div>
+                            <div class="section-subtitle">Edit name, size or price. Names and sizes are editable inline.</div>
                         </div>
                         <div style="font-size:0.8rem;color:var(--gray-500);"><span id="priceCount">0</span> services</div>
                     </div>
                     <div id="priceSettingsContainer"><div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading prices...</div></div>
                 </div>
             </div>
-            
+
+            <!-- PAGE: AUDIT -->
             <div id="page-audit" class="page-content">
                 <div class="section-header">
                     <div class="section-header-left">
@@ -996,7 +1012,7 @@
                 </div>
             </div>
 
-            
+            <!-- PAGE: BACKUP -->
             <div id="page-backup" class="page-content">
                 <div class="section-header">
                     <div class="section-header-left">
@@ -1035,19 +1051,23 @@
             </div>
         </div>
     </div>
-    
 
+    <!-- ============================================================ -->
+    <!-- MODALS -->
+    <!-- ============================================================ -->
+
+    <!-- TRANSACTION MODAL -->
     <div class="modal-overlay" id="transactionModal">
         <div class="modal">
             <div class="modal-header">
                 <h2 id="modalTitle">📝 New Transaction</h2>
                 <button class="modal-close" onclick="closeModal()">&times;</button>
             </div>
-            <form id="transactionForm" onsubmit="saveTransaction(event)">
+            <form id="transactionForm" onsubmit="saveTransaction(event)" novalidate>
                 <input type="hidden" id="editId">
                 <div class="form-group">
                     <label>Transaction Type <span class="required">*</span></label>
-                    <select id="formCategory" onchange="toggleTransactionFields()" required>
+                    <select id="formCategory" onchange="toggleTransactionFields()">
                         <option value="carwash">🚘 Carwash</option>
                         <option value="store">🏪 Store Item</option>
                         <option value="accessories">🧴 Accessories</option>
@@ -1056,57 +1076,75 @@
                         <option value="other">💰 Other</option>
                     </select>
                 </div>
+
                 <div id="carwashFields">
                     <div class="form-row">
-						<div class="form-group">
-							<label>Bay <span class="required">*</span></label>
-							<input type="hidden" id="formBay">
-							<div class="bay-picker" id="bayPicker">
-								<!-- Rendered dynamically -->
-							</div>
-							<div class="bay-picker-hint" id="bayPickerHint">
-								<i class="fas fa-info-circle"></i> Occupied bays are disabled
-							</div>
-						</div>
-						<div class="form-group">
-							<label>Plate Number</label>
-							<input type="text" id="formPlate" placeholder="Plate #">
-						</div>
-					</div>
+                        <div class="form-group">
+                            <label>Bay <span class="required">*</span></label>
+                            <input type="hidden" id="formBay">
+                            <div class="bay-picker" id="bayPicker"></div>
+                            <div class="bay-picker-hint" id="bayPickerHint">
+                                <i class="fas fa-info-circle"></i> Occupied bays are disabled
+                            </div>
+                            <div class="field-error" id="err-formBay"></div>
+                        </div>
+                        <div class="form-group">
+                            <label>Plate Number <span class="field-optional">(optional)</span></label>
+                            <input type="text" id="formPlate" placeholder="e.g. ABC 1234" maxlength="12">
+                        </div>
+                    </div>
+
                     <div class="form-group">
                         <label>Car Model <span class="required">*</span></label>
                         <div class="dropdown-with-add">
-                            <select id="formModel"><option value="">Select...</option></select>
-                            <button type="button" class="btn btn-sm btn-outline" onclick="addDropdownItem('model')">+</button>
+                            <select id="formModel"><option value="">Select car model...</option></select>
+                            <button type="button" class="btn btn-sm btn-outline" onclick="addDropdownItem('model')" title="Add new model">+</button>
                         </div>
+                        <div class="field-hint" id="hint-formModel">Pick the car model from the list</div>
+                        <div class="field-error" id="err-formModel"></div>
                     </div>
+
                     <div class="form-group">
                         <label>Select Services <span class="required">*</span></label>
                         <div class="service-select-row">
                             <select id="formServices"><option value="">Select service & size...</option></select>
-                            <button type="button" class="btn btn-sm btn-primary" onclick="addServiceToSelection()"><i class="fas fa-plus"></i> Add</button>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="addServiceToSelection()">
+                                <i class="fas fa-plus"></i> Add
+                            </button>
                         </div>
+                        <div class="field-hint" id="hint-formServices">Choose a service and click Add</div>
+                        <div class="field-error" id="err-formServices"></div>
                     </div>
+
                     <div class="form-group">
-                        <label>Selected Services:</label>
+                        <label>Selected Services <span class="required">*</span></label>
                         <div id="selectedServicesContainer" class="selected-services-container">
-                            <span style="color:#94a3b8;font-size:0.85rem;">No services selected</span>
+                            <span style="color:#94a3b8;font-size:0.85rem;">No services selected — add at least one</span>
                         </div>
                         <div class="service-total">Service Total: <span id="serviceTotalDisplay">₱0.00</span></div>
+                        <div class="field-error" id="err-selectedServices"></div>
                     </div>
+
                     <div class="form-group">
                         <label>Carwasher <span class="required">*</span></label>
                         <div class="dropdown-with-add">
-                            <select id="formCarwasher"><option value="">Select...</option></select>
-                            <button type="button" class="btn btn-sm btn-outline" onclick="addDropdownItem('carwasher')">+</button>
+                            <select id="formCarwasher"><option value="">Select carwasher...</option></select>
+                            <button type="button" class="btn btn-sm btn-outline" onclick="addDropdownItem('carwasher')" title="Add new carwasher">+</button>
                         </div>
+                        <div class="field-error" id="err-formCarwasher"></div>
                     </div>
+
                     <div class="store-order-section">
-                        <div class="store-order-header"><span style="color: #8b5cf6; font-weight: 700;">🛒 Store Order <span style="font-size:0.7rem;color:#64748b;">(optional)</span></span></div>
+                        <div class="store-order-header">
+                            <span style="color: #8b5cf6; font-weight: 700;">🛒 Store Order</span>
+                            <span class="field-optional">(optional)</span>
+                        </div>
                         <div class="store-order-item-input">
-                            <input type="text" id="formStoreItemName" placeholder="Item name">
-                            <input type="number" id="formStoreItemPrice" placeholder="Price" step="0.01">
-                            <button type="button" class="btn btn-sm btn-primary" onclick="addCustomStoreItem()"><i class="fas fa-plus"></i></button>
+                            <input type="text" id="formStoreItemName" placeholder="Item name" maxlength="40">
+                            <input type="number" id="formStoreItemPrice" placeholder="Price" step="0.01" min="0">
+                            <button type="button" class="btn btn-sm btn-primary" onclick="addCustomStoreItem()">
+                                <i class="fas fa-plus"></i>
+                            </button>
                         </div>
                         <div class="store-order-quick-buttons">
                             <button type="button" class="btn btn-sm btn-outline" onclick="addStoreItemToCarwash('Cigarettes', 12)">🚬 Cigarettes</button>
@@ -1118,96 +1156,81 @@
                         <div id="storeItemsContainer" class="store-items-list"></div>
                         <div class="store-total">Store Total: <span id="storeOrderTotal">₱0.00</span></div>
                     </div>
+
                     <div class="form-group total-display">
                         <label>Total Amount:</label>
                         <div id="formTotalDisplay">₱0.00</div>
                     </div>
                 </div>
+
                 <div id="storeFields" style="display:none;">
-                    <div class="form-group"><label>Item Name <span class="required">*</span></label><input type="text" id="formItem" placeholder="e.g. Marlboro, Coca-Cola"></div>
-                    <div class="form-row">
-                        <div class="form-group"><label>Quantity <span class="required">*</span></label><input type="number" id="formQuantity" step="0.01" placeholder="0" onchange="calculateStoreTotal()"></div>
-                        <div class="form-group"><label>Unit Price (₱) <span class="required">*</span></label><input type="number" id="formUnitPrice" step="0.01" placeholder="0.00" onchange="calculateStoreTotal()"></div>
+                    <div class="form-group">
+                        <label>Item Name <span class="required">*</span></label>
+                        <input type="text" id="formItem" placeholder="e.g. Marlboro, Coca-Cola" maxlength="60">
+                        <div class="field-error" id="err-formItem"></div>
                     </div>
-                    <div class="form-group"><label>Total (₱)</label><input type="text" id="formStoreTotal" placeholder="0.00" readonly style="background:#f1f5f9;font-weight:700;"></div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Quantity <span class="required">*</span></label>
+                            <input type="number" id="formQuantity" step="0.01" min="0.01" placeholder="e.g. 1" onchange="calculateStoreTotal()">
+                            <div class="field-error" id="err-formQuantity"></div>
+                        </div>
+                        <div class="form-group">
+                            <label>Unit Price (₱) <span class="required">*</span></label>
+                            <input type="number" id="formUnitPrice" step="0.01" min="0.01" placeholder="e.g. 25.00" onchange="calculateStoreTotal()">
+                            <div class="field-error" id="err-formUnitPrice"></div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Total (₱)</label>
+                        <input type="text" id="formStoreTotal" placeholder="0.00" readonly style="background:#f1f5f9;font-weight:700;">
+                    </div>
                 </div>
+
                 <div class="form-row">
-                    <div class="form-group"><label>Payment Method <span class="required">*</span></label>
+                    <div class="form-group">
+                        <label>Payment Method <span class="required">*</span></label>
                         <select id="formPayment">
-                            <option value="CASH">CASH</option>
-                            <option value="GCASH">GCASH</option>
-                            <option value="MARI BANK">MARI BANK</option>
-                            <option value="INSTA PAY">INSTA PAY</option>
-                            <option value="OTHER BANKS">OTHER BANKS</option>
-                            <option value="FREE CW/QW">FREE CW/QW</option>
+                            <option value="CASH">💵 CASH</option>
+                            <option value="GCASH">📱 GCASH</option>
+                            <option value="MARI BANK">🏦 MARI BANK</option>
+                            <option value="INSTA PAY">⚡ INSTA PAY</option>
+                            <option value="OTHER BANKS">🏦 OTHER BANKS</option>
+                            <option value="FREE CW/QW">🎁 FREE CW/QW</option>
                         </select>
                     </div>
-                    <div class="form-group"><label>Payment Status <span class="required">*</span></label>
+                    <div class="form-group">
+                        <label>Payment Status <span class="required">*</span></label>
                         <select id="formPaymentStatus">
                             <option value="unpaid">❌ Unpaid</option>
                             <option value="paid">✅ Paid</option>
                             <option value="partial">🔄 Partial</option>
                         </select>
+                        <div class="field-hint" id="hint-formPaymentStatus">Carwash must be PAID before completing</div>
                     </div>
                 </div>
-                <div class="form-group"><label>Remarks <span style="font-size:0.7rem;color:#64748b;">(optional)</span></label><input type="text" id="formRemarks" placeholder="Optional notes"></div>
+
+                <div class="form-group">
+                    <label>Remarks <span class="field-optional">(optional)</span></label>
+                    <input type="text" id="formRemarks" placeholder="Any notes about this transaction" maxlength="120">
+                </div>
+
+                <div class="form-validation-summary" id="formValidationSummary" style="display:none;">
+                    <i class="fas fa-exclamation-circle"></i>
+                    <span id="formValidationSummaryText">Please complete required fields</span>
+                </div>
+
                 <div class="modal-actions">
                     <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary" id="modalSubmitBtn">Save Transaction</button>
+                    <button type="submit" class="btn btn-primary" id="modalSubmitBtn" disabled>
+                        <i class="fas fa-save"></i> Save Transaction
+                    </button>
                 </div>
             </form>
         </div>
     </div>
 
-    
-    <div class="modal-overlay" id="quickAddModal">
-        <div class="modal" style="max-width: 450px;">
-            <div class="modal-header">
-                <h2>⚡ Quick Add</h2>
-                <button class="modal-close" onclick="closeQuickAdd()">&times;</button>
-            </div>
-            <form id="quickAddForm" onsubmit="saveQuickAdd(event)">
-                <div class="form-group"><label>Type <span class="required">*</span></label>
-                    <select id="quickCategory">
-                        <option value="carwash">🚘 Carwash</option>
-                        <option value="store">🏪 Store</option>
-                        <option value="accessories">🧴 Accessories</option>
-                        <option value="drinks">🥤 Drinks</option>
-                        <option value="paluto">🍜 Paluto</option>
-                        <option value="other">💰 Other</option>
-                    </select>
-                </div>
-                <div class="form-group"><label>Item/Service <span class="required">*</span></label><input type="text" id="quickItem" placeholder="e.g. VIOS, Marlboro"></div>
-                <div class="form-row">
-                    <div class="form-group"><label>Amount (₱) <span class="required">*</span></label><input type="number" id="quickAmount" step="0.01" placeholder="0.00"></div>
-                    <div class="form-group"><label>Carwasher</label><input type="text" id="quickCarwasher" placeholder="Name"></div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group"><label>Payment</label>
-                        <select id="quickPayment">
-                            <option value="CASH">CASH</option>
-                            <option value="GCASH">GCASH</option>
-                            <option value="MARI BANK">MARI BANK</option>
-                            <option value="OTHER BANKS">OTHER BANKS</option>
-                        </select>
-                    </div>
-                    <div class="form-group"><label>Status</label>
-                        <select id="quickPaymentStatus">
-                            <option value="unpaid">Unpaid</option>
-                            <option value="paid">Paid</option>
-                            <option value="partial">Partial</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-group"><label>Remarks</label><input type="text" id="quickRemarks" placeholder="Optional notes"></div>
-                <div class="modal-actions">
-                    <button type="button" class="btn btn-outline" onclick="closeQuickAdd()">Cancel</button>
-                    <button type="submit" class="btn btn-success">Add</button>
-                </div>
-            </form>
-        </div>
-    </div>
-    
+    <!-- STORE ITEM MODAL -->
     <div class="modal-overlay" id="storeItemModal">
         <div class="modal" style="max-width: 500px;">
             <div class="modal-header">
@@ -1264,58 +1287,7 @@
         </div>
     </div>
 
-    
-    <div class="modal-overlay" id="accessoryModal">
-        <div class="modal" style="max-width: 500px;">
-            <div class="modal-header">
-                <h2>🧴 Add Accessory Sale</h2>
-                <button class="modal-close" onclick="closeAccessoryModal()">&times;</button>
-            </div>
-            <form id="accessoryForm" onsubmit="saveAccessory(event)">
-                <div class="form-group">
-                    <label>Accessory Item <span class="required">*</span></label>
-                    <select id="accessoryItemSelect" onchange="updateAccessoryPrice()" style="margin-bottom:0.4rem;">
-                        <option value="">Select or type below...</option>
-                        <option value="Car Shampoo" data-price="250">🧴 Car Shampoo</option>
-                        <option value="Tire Black" data-price="180">⚫ Tire Black</option>
-                        <option value="Microfiber Towel" data-price="150">🧽 Microfiber Towel</option>
-                        <option value="Car Wax" data-price="350">✨ Car Wax</option>
-                        <option value="Air Freshener" data-price="100">🌸 Air Freshener</option>
-                        <option value="Glass Cleaner" data-price="200">🪟 Glass Cleaner</option>
-                    </select>
-                    <input type="text" id="accessoryItemName" placeholder="Or type custom item name">
-                </div>
-                <div class="form-row">
-                    <div class="form-group"><label>Quantity</label><input type="number" id="accessoryQuantity" value="1" min="1" step="1" onchange="calculateAccessoryTotal()"></div>
-                    <div class="form-group"><label>Unit Price (₱)</label><input type="number" id="accessoryUnitPrice" step="0.01" placeholder="0.00" onchange="calculateAccessoryTotal()"></div>
-                </div>
-                <div class="form-group"><label>Total (₱)</label><input type="text" id="accessoryTotal" placeholder="0.00" readonly style="background:#f1f5f9;font-weight:700;"></div>
-                <div class="form-row">
-                    <div class="form-group"><label>Payment</label>
-                        <select id="accessoryPayment">
-                            <option value="CASH">CASH</option>
-                            <option value="GCASH">GCASH</option>
-                            <option value="MARI BANK">MARI BANK</option>
-                            <option value="OTHER BANKS">OTHER BANKS</option>
-                        </select>
-                    </div>
-                    <div class="form-group"><label>Status</label>
-                        <select id="accessoryPaymentStatus">
-                            <option value="paid">✅ Paid</option>
-                            <option value="unpaid">❌ Unpaid</option>
-                            <option value="partial">🔄 Partial</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="modal-actions">
-                    <button type="button" class="btn btn-outline" onclick="closeAccessoryModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Add Sale</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    
+    <!-- ADD SERVICE MODAL -->
     <div class="modal-overlay" id="addServiceModal">
         <div class="modal" style="max-width: 500px;">
             <div class="modal-header">
@@ -1368,7 +1340,7 @@
         </div>
     </div>
 
-    
+    <!-- PARTIAL PAYMENT MODAL -->
     <div class="modal-overlay" id="partialPaymentModal">
         <div class="modal" style="max-width: 480px;">
             <div class="modal-header">
@@ -1407,7 +1379,8 @@
             </div>
         </div>
     </div>
-    
+
+    <!-- CARWASHER JOBS MODAL -->
     <div class="modal-overlay" id="carwasherJobsModal">
         <div class="modal" style="max-width: 900px; width: 95vw;">
             <div class="modal-header">
@@ -1451,7 +1424,61 @@
         </div>
     </div>
 
-    
+    <!-- PRODUCT MODAL (Kiosk Add/Edit) -->
+    <div class="modal-overlay" id="productModal">
+        <div class="modal" style="max-width: 480px;">
+            <div class="modal-header">
+                <h2 id="productModalTitle">➕ Add Product</h2>
+                <button class="modal-close" onclick="closeProductModal()">&times;</button>
+            </div>
+            <form id="productForm" onsubmit="saveProduct(event)">
+                <div class="product-form-preview">
+                    <div class="product-emoji-preview" id="productEmojiPreview">📦</div>
+                    <div class="product-emoji-input-wrap">
+                        <label>Emoji / Icon</label>
+                        <input type="text" id="productEmoji" placeholder="📦" maxlength="4" oninput="updateProductEmojiPreview()">
+                        <div class="product-emoji-hint">Paste any emoji or leave blank for 📦</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Product Name <span class="required">*</span></label>
+                    <input type="text" id="productName" placeholder="e.g. Car Shampoo" required>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Price (₱) <span class="required">*</span></label>
+                        <input type="number" id="productPrice" step="0.01" min="0" placeholder="0.00" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Stock <span style="font-size:0.7rem;color:var(--gray-500);">(optional)</span></label>
+                        <input type="number" id="productStock" step="1" min="0" placeholder="∞">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Category <span class="required">*</span></label>
+                    <select id="productCategory" required>
+                        <option value="store">📦 Store Item</option>
+                        <option value="drinks">🥤 Drinks</option>
+                        <option value="paluto">🍜 Paluto</option>
+                        <option value="accessories">🧴 Accessories</option>
+                        <option value="other">💰 Other</option>
+                    </select>
+                </div>
+
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-outline" onclick="closeProductModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="productSubmitBtn">
+                        <i class="fas fa-save"></i> Save Product
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- RECEIPT MODAL -->
     <div class="modal-overlay" id="receiptModal">
         <div class="modal receipt-modal" style="max-width: 450px; padding: 1rem;">
             <div class="modal-header">
@@ -1467,7 +1494,7 @@
         </div>
     </div>
 
-    
+    <!-- CONFIRMATION MODAL -->
     <div class="modal-overlay" id="confirmModal">
         <div class="modal confirm-modal">
             <span class="confirm-icon" id="confirmIcon">⚠️</span>
@@ -1485,60 +1512,7 @@
         </div>
     </div>
 
-    
-	<div class="modal-overlay" id="productModal">
-		<div class="modal" style="max-width: 480px;">
-			<div class="modal-header">
-				<h2 id="productModalTitle">➕ Add Product</h2>
-				<button class="modal-close" onclick="closeProductModal()">&times;</button>
-			</div>
-			<form id="productForm" onsubmit="saveProduct(event)">
-				<div class="product-form-preview">
-					<div class="product-emoji-preview" id="productEmojiPreview">📦</div>
-					<div class="product-emoji-input-wrap">
-						<label>Emoji / Icon</label>
-						<input type="text" id="productEmoji" placeholder="📦" maxlength="4" oninput="updateProductEmojiPreview()">
-						<div class="product-emoji-hint">Paste any emoji or leave blank for 📦</div>
-					</div>
-				</div>
-
-				<div class="form-group">
-					<label>Product Name <span class="required">*</span></label>
-					<input type="text" id="productName" placeholder="e.g. Car Shampoo" required>
-				</div>
-
-				<div class="form-row">
-					<div class="form-group">
-						<label>Price (₱) <span class="required">*</span></label>
-						<input type="number" id="productPrice" step="0.01" min="0" placeholder="0.00" required>
-					</div>
-					<div class="form-group">
-						<label>Stock <span style="font-size:0.7rem;color:var(--gray-500);">(optional)</span></label>
-						<input type="number" id="productStock" step="1" min="0" placeholder="∞">
-					</div>
-				</div>
-
-				<div class="form-group">
-					<label>Category <span class="required">*</span></label>
-					<select id="productCategory" required>
-						<option value="store">📦 Store Item</option>
-						<option value="drinks">🥤 Drinks</option>
-						<option value="paluto">🍜 Paluto</option>
-						<option value="accessories">🧴 Accessories</option>
-						<option value="other">💰 Other</option>
-					</select>
-				</div>
-
-				<div class="modal-actions">
-					<button type="button" class="btn btn-outline" onclick="closeProductModal()">Cancel</button>
-					<button type="submit" class="btn btn-primary" id="productSubmitBtn">
-						<i class="fas fa-save"></i> Save Product
-					</button>
-				</div>
-			</form>
-		</div>
-	</div>
-
+    <!-- TOUR OVERLAY -->
     <div id="tourOverlay" class="tour-overlay" style="display:none;">
         <div class="tour-tooltip" id="tourTooltip">
             <div class="tour-header">
@@ -1558,12 +1532,13 @@
         </div>
     </div>
 
-	<button class="fab-new-tx" id="fabMain" onclick="openAddModal()" aria-label="New Transaction" title="New Transaction">
-		<i class="fas fa-plus"></i>
-		<span class="fab-new-tx-label">New</span>
-	</button>
-
     <div id="notificationContainer"></div>
+
+    <!-- FLOATING NEW TRANSACTION -->
+    <button class="fab-new-tx" id="fabMain" onclick="openAddModal()" aria-label="New Transaction" title="New Transaction">
+        <i class="fas fa-plus"></i>
+        <span class="fab-new-tx-label">New</span>
+    </button>
 
     <script src="users.js"></script>
     <script src="app.js"></script>
